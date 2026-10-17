@@ -63,8 +63,12 @@ jobs:
                'sha256': '0fc2e436a7907ba482d59e3934b60f0cc354667286b1089a3d2dc26d11717704', 'files': 44},
               {'version': '1.0.3', 'commit': 'a671266dc0e16b71daaf88e7f32e833842da27fb', 'prerelease': False,
                'sha256': 'e83da81eb6330a27be5ffce9c9809d19afc455b5745152c77965ca017b0d23b7', 'files': 44},
-              {'version': '1.0.4', 'commit': None, 'prerelease': False,
+              {'version': '1.0.4', 'commit': '39cefcf2adf81110e6f0a068ee75bec36f48cdf3', 'prerelease': False,
                'sha256': 'fbe53ab06290577c72afc17b9dc3da76fb2fe9cb693e35ba88238f78e88d1386', 'files': 44},
+              {'version': '1.1.0', 'commit': None, 'prerelease': False,
+               'sha256': 'a300419c39f6bf132a3b2bb6b74b6b57f7577668586bc62eb2a9c5a38b7584b9', 'files': 45,
+               # Reviewed compatibility.yml target, never inferred from a moving latest version.
+               'update': {'requires': '6.6', 'requires_php': '8.2', 'tested': '7.1.3'}},
           )
           PREFIX = f'repos/{REPOSITORY}/'
           BLOBS = {}
@@ -166,8 +170,43 @@ jobs:
               return files
           
           
+          def update_metadata(data, spec):
+              """Derive updater data from the verified installable ZIP, not unchecked source fields."""
+              config = spec['update']
+              digest = hashlib.sha256(data).hexdigest()
+              require(digest == spec['sha256'], 'Updater ZIP checksum mismatch')
+              require(not spec['prerelease'], 'Updater metadata is only for stable releases')
+              with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                  require(archive.testzip() is None, 'Updater ZIP verification failed')
+                  require(archive.namelist().count('shikipress/style.css') == 1, 'Updater theme header missing or duplicated')
+                  style = archive.read('shikipress/style.css')
+              # WordPress reads theme headers from the first 8 KiB. Require one unambiguous
+              # reviewed header block, so malformed/duplicate declarations fail closed.
+              require(style.startswith(b'/*') and b'*/' in style[:8192], 'Invalid updater theme header block')
+              header = style[:style.index(b'*/')].decode('utf-8')
+              values = {}
+              for key, field in (('version', 'Version'), ('requires', 'Requires at least'), ('requires_php', 'Requires PHP')):
+                  matches = re.findall(r'^' + re.escape(field) + r':[ \t]*([^\r\n]*)', header, re.M)
+                  require(len(matches) == 1, f'Missing or duplicate updater {field} header')
+                  value = matches[0].strip()
+                  pattern = r'(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)'
+                  pattern += r'\.(?:0|[1-9][0-9]*)' if key == 'version' else r'(?:\.(?:0|[1-9][0-9]*))?'
+                  require(bool(re.fullmatch(pattern, value)), f'Invalid updater {field} header')
+                  values[key] = value
+              require(values['version'] == spec['version'], 'Updater theme version mismatch')
+              require(values['requires'] == config['requires'] and values['requires_php'] == config['requires_php'],
+                      'Updater theme requirements differ from reviewed release configuration')
+              require(bool(re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', config['tested'])), 'Invalid reviewed WordPress target')
+              metadata = {'schema': 1, 'theme': 'shikipress', **values, 'tested': config['tested'],
+                          'package': f'https://github.com/{REPOSITORY}/releases/download/v{values["version"]}/shikipress-{values["version"]}.zip',
+                          'sha256': digest, 'size': len(data)}
+              return (json.dumps(metadata, indent=2) + '\n').encode('utf-8')
+          
+          
           def package(files, spec):
               """Byte-identical settings to the reviewed scripts/package.py, without executing it."""
+              require(isinstance(spec['files'], int) and spec['files'] > 0
+                      and bool(re.fullmatch('[0-9a-f]{64}', spec['sha256'])), 'Reviewed package pins are incomplete')
               require(len(files) == spec['files'], 'Theme file count mismatch')
               for name, data in files.items():
                   parts = PurePosixPath(name).parts
@@ -199,7 +238,10 @@ jobs:
                   require(all(archive.read(name) == value for name, value in files.items()), 'ZIP/source mismatch')
               require(hashlib.sha256(data).hexdigest() == spec['sha256'], 'Pinned package checksum mismatch')
               filename = f'shikipress-{spec["version"]}.zip'
-              return {filename: data, 'SHA256SUMS.txt': f'{spec["sha256"]}  {filename}\n'.encode()}
+              assets = {filename: data, 'SHA256SUMS.txt': f'{spec["sha256"]}  {filename}\n'.encode()}
+              if 'update' in spec:
+                  assets['shikipress-update.json'] = update_metadata(data, spec)
+              return assets
           
           
           def tag_commit(tag):
@@ -292,7 +334,7 @@ jobs:
                   detail = ('Historical 1.0.2 baseline, marked prerelease and not latest. The 44 original theme files '
                             'are unchanged; the installable ZIP is deterministically repackaged from the pinned baseline source. '
                             'Known issues retained for historical reproducibility include long mobile site-title overflow, '
-                            'narrow-screen fixed-width advertising layout, and synchronous no-fill handling. Prefer 1.0.3 for new installs.'
+                            'narrow-screen fixed-width advertising layout, and synchronous no-fill handling. Prefer 1.1.0 for new installs.'
                             if spec['prerelease'] else
                             f'Stable {spec["version"]} release. Both full CI workflows passed on the exact tagged source commit. '
                             'Coverage includes native PHP syntax checks, disposable MySQL-backed WordPress upgrade/retention fixtures, '
@@ -301,6 +343,14 @@ jobs:
                             'Version 1.0.4 fixes Site Kit AdSense loader duplication and Yoast reader-sitemap pagination metadata. '
                             'Fixed-width ad tags require their minimum width to be configured, and reserved ad height must match '
                             'the expected creative height; unknown fixed widths and oversized creatives are not automatically corrected.')
+                  if 'update' in spec:
+                      detail += (' Version 1.1.0 adds the native WordPress admin updater for stable ShikiPress releases on single-site installations. '
+                                 'Install this ZIP manually once to bootstrap updates from older versions. '
+                                 'Updates are manual by default; the updater does not enable automatic installation. '
+                                 'An existing administrator choice to enable WordPress theme auto-updates is honored. '
+                                 'Multisite keeps manual ZIP updates. Checks run only when ShikiPress is the active theme or the active child theme uses ShikiPress as its parent. '
+                                 'Update checks contact GitHub, which receives the server IP address; no site URL, email, or license key is sent. '
+                                 'shikipress-update.json records the verified ZIP version, requirements, byte size, and SHA-256 digest.')
                   body = (f'{detail}\n\nSource commit: {source}\n\nInstall the shikipress-{spec["version"]}.zip asset '
                           '(the GitHub-generated source archive also contains development files). '
                           'SHA256SUMS.txt verifies the installable theme ZIP. Back up the database and wp-content/uploads '
@@ -310,7 +360,9 @@ jobs:
                           f'https://github.com/{REPOSITORY}/blob/{main}/docs/ads-guide.md\n'
                           'Plugin coverage and exclusions: '
                           f'https://github.com/{REPOSITORY}/blob/{main}/docs/plugin-compatibility.md\n'
-                          '\nValidation commit: ' + main + '\n'
+                          + (f'Theme updater and recovery: https://github.com/{REPOSITORY}/blob/{main}/docs/theme-updates.md\n'
+                             if 'update' in spec else '')
+                          + '\nValidation commit: ' + main + '\n'
                           + '\n'.join(f'- {run["url"]} (attempt {run["attempt"]})' for run in evidence)
                           + '\n\n' + marker(spec, source))
                   release = api('releases', 'POST', {'tag_name': tag, 'target_commitish': source,
@@ -371,9 +423,9 @@ jobs:
               for item in prepared:
                   publish(item, sha, evidence)
               latest = api('releases/latest')
-              require(latest['tag_name'] == 'v1.0.4' and not latest['draft'] and not latest['prerelease'],
+              require(latest['tag_name'] == 'v1.1.0' and not latest['draft'] and not latest['prerelease'],
                       'Stable/latest status differs; review required (nothing will be overwritten)')
-              print('Both bounded releases and stable/latest designation verified.')
+              print('All bounded releases and stable/latest designation verified.')
           
           
           if __name__ == '__main__':

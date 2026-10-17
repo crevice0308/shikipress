@@ -27,6 +27,11 @@ jobs:
           bash -n tests/plugins/run-ci.sh
           find tests/plugins -type f -name '*.php' -print0 | xargs -0 -n1 php -l
           python3 -m py_compile tests/plugins/check-http.py
+          python3 tests/updater/publisher-tests.py
+          python3 tests/updater/fixtures.py "$RUNNER_TEMP/updater-unit-fixtures"
+          php tests/updater/unit.php "$RUNNER_TEMP/updater-unit-fixtures"
+          bash -n tests/updater/run-ci.sh
+          find tests/updater -type f -name '*.php' -print0 | xargs -0 -n1 php -l
   content-retention:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -83,6 +88,15 @@ jobs:
           tools: wp-cli
       - name: Verify every retained fixture after PHP upgrade
         run: bash tests/upgrade/run-ci.sh assert-php
+      - name: Native theme updater, verified packages, and retained content
+        run: bash tests/updater/run-ci.sh
+      - name: Preserve native updater evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: updater-wp-${{ matrix.target_wp }}-php-${{ matrix.next_php }}
+          path: ${{ runner.temp }}/shikipress-retention-ci/reports/updater
+          if-no-files-found: warn
       - name: Official plugin activation, retention, and local rendering smoke
         run: bash tests/plugins/run-ci.sh
       - name: Preserve versioned plugin smoke evidence
