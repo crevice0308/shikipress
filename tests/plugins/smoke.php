@@ -36,6 +36,13 @@ function shiki_plugin_content_hash($ids) {
     foreach ($ids as $id) { $data[$id] = [get_post($id, ARRAY_A), get_post_meta($id)]; }
     return hash('sha256', wp_json_encode($data));
 }
+function shiki_plugin_tablepress_option($name) {
+    $raw = get_option($name);
+    if (!is_string($raw)) { throw new RuntimeException('Missing TablePress JSON option: '.$name); }
+    $value = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+    if (!is_array($value)) { throw new RuntimeException('Invalid TablePress option shape: '.$name); }
+    return $value;
+}
 function shiki_plugin_settings($slug, $fixture) {
     switch ($slug) {
         case 'google-site-kit': return ['admin_bar_menu_enabled'=>(bool)get_option('googlesitekit_admin_bar_menu_enabled')];
@@ -48,10 +55,14 @@ function shiki_plugin_settings($slug, $fixture) {
             preg_match('/^\s*\$cache_max_time\s*=\s*[\x27\x22]?([0-9]+)/m', $text, $m);
             return ['cache_max_time'=>isset($m[1]) ? (int)$m[1] : null];
         case 'tablepress':
-            $o = get_option('tablepress_plugin_options', []);
-            $tables = get_option('tablepress_tables', []);
-            return ['custom_css'=>$o['custom_css'] ?? null, 'use_custom_css'=>$o['use_custom_css'] ?? null,
-                'table_post'=>$tables['table_post'][$fixture['table']] ?? null,
+            // TablePress persists its option arrays as JSON strings, including while inactive.
+            $o = shiki_plugin_tablepress_option('tablepress_plugin_options');
+            $tables = shiki_plugin_tablepress_option('tablepress_tables');
+            if (!isset($o['custom_css'], $o['use_custom_css'], $tables['table_post'][$fixture['table']])
+                || !is_string($o['custom_css']) || !is_bool($o['use_custom_css'])
+                || !is_int($tables['table_post'][$fixture['table']])) { throw new RuntimeException('Incomplete TablePress fixture settings.'); }
+            return ['custom_css'=>$o['custom_css'], 'use_custom_css'=>$o['use_custom_css'],
+                'table_post'=>$tables['table_post'][$fixture['table']],
                 'table_content_and_meta'=>shiki_plugin_content_hash([$fixture['table_post']])];
         case 'wordfence':
             global $wpdb;
@@ -120,7 +131,7 @@ if ($phase === 'seed-plugin') {
             $table['visibility'] = ['rows'=>[1,1,1], 'columns'=>[1,1]];
             $table['options']['use_datatables'] = true;
             $p['table'] = shiki_plugin_ok(TablePress::$model_table->add($table));
-            $tables = get_option('tablepress_tables');
+            $tables = shiki_plugin_tablepress_option('tablepress_tables');
             $p['table_post'] = shiki_plugin_ok($tables['table_post'][$p['table']] ?? null);
             $page = shiki_plugin_post('CI plugin table', '<p>SHIKI_PLUGIN_SMOKE_BODY</p>[table id='.$p['table'].' /]');
             $p['posts'] = [$p['table_post'], $page];
@@ -130,6 +141,8 @@ if ($phase === 'seed-plugin') {
         case 'updraftplus': update_option('updraft_retain', 3); break;
     }
     $p['settings'] = shiki_plugin_settings($slug, $p);
+    if ($slug === 'tablepress' && ($p['settings']['custom_css'] !== '.tablepress { border-spacing: 0; }'
+        || $p['settings']['use_custom_css'] !== true)) { throw new RuntimeException('TablePress fixture settings were not persisted.'); }
     $p['content_hash'] = shiki_plugin_content_hash($p['posts']);
     $f['plugins'][$slug] = $p;
     update_option('shiki_plugin_smoke_fixture', $f, false);
