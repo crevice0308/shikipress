@@ -21,9 +21,15 @@ function shiki_plugin_ok($value) {
     if (!$value) { throw new RuntimeException('Fixture creation failed.'); }
     return $value;
 }
-function shiki_plugin_post($title, $body, $type = 'page') {
-    return shiki_plugin_ok(wp_insert_post(['post_title'=>$title, 'post_content'=>$body,
-        'post_type'=>$type, 'post_status'=>'publish', 'post_author'=>1], true));
+function shiki_plugin_post($title, $body, $type = 'page', $category = 0) {
+    $post = ['post_title'=>$title, 'post_content'=>$body,
+        'post_type'=>$type, 'post_status'=>'publish', 'post_author'=>1];
+    if ($type === 'post') {
+        if (!$category || !term_exists($category, 'category')) { throw new RuntimeException('An isolated plugin fixture category is required.'); }
+        // Assign on insertion: default-category counts are part of the retained WP_Term snapshots.
+        $post['post_category'] = [(int)$category];
+    }
+    return shiki_plugin_ok(wp_insert_post($post, true));
 }
 function shiki_plugin_content_hash($ids) {
     $data = [];
@@ -58,16 +64,18 @@ function shiki_plugin_settings($slug, $fixture) {
 $f = get_option('shiki_plugin_smoke_fixture');
 if ($phase === 'seed') {
     if ($f) { throw new RuntimeException('Refusing to replace existing smoke fixtures.'); }
-    $base = shiki_plugin_post('CI plugin smoke article', '<h2>Plugin smoke heading</h2><p>SHIKI_PLUGIN_SMOKE_BODY</p><h2>Retained section</h2><p>Synthetic local content.</p>', 'post');
+    $category = shiki_plugin_ok(wp_insert_term('CI plugin smoke fixtures', 'category', ['slug'=>'ci-plugin-smoke-fixtures']));
+    $category = (int)$category['term_id'];
+    $base = shiki_plugin_post('CI plugin smoke article', '<h2>Plugin smoke heading</h2><p>SHIKI_PLUGIN_SMOKE_BODY</p><h2>Retained section</h2><p>Synthetic local content.</p>', 'post', $category);
     update_post_meta($base, '_shiki_seo_description', 'ShikiPress synthetic plugin smoke description.');
     $sitemap = shiki_plugin_post('CI plugin reader sitemap', '[shiki_sitemap]');
     // Do not alter original theme settings/snapshot. Populate a genuine second slice.
     $per_page = max(10, min(100, absint(shiki_option('seo_sitemap_per_page', 50))));
     $posts = [$base, $sitemap];
     for ($i = 0; $i < $per_page + 2; $i++) {
-        $posts[] = shiki_plugin_post('CI plugin sitemap entry '.$i, '<p>Synthetic pagination fixture '.$i.'</p>', 'post');
+        $posts[] = shiki_plugin_post('CI plugin sitemap entry '.$i, '<p>Synthetic pagination fixture '.$i.'</p>', 'post', $category);
     }
-    $f = ['posts'=>$posts, 'urls'=>['article'=>get_permalink($base), 'sitemap'=>get_permalink($sitemap)],
+    $f = ['posts'=>$posts, 'category'=>$category, 'urls'=>['article'=>get_permalink($base), 'sitemap'=>get_permalink($sitemap)],
         'plugins'=>[], 'base_hash'=>shiki_plugin_content_hash($posts), 'sitemap_page_size'=>$per_page];
     update_option('shiki_plugin_smoke_fixture', $f, false);
 }
