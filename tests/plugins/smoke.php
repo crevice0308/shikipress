@@ -33,7 +33,11 @@ function shiki_plugin_post($title, $body, $type = 'page', $category = 0) {
 }
 function shiki_plugin_content_hash($ids) {
     $data = [];
-    foreach ($ids as $id) { $data[$id] = [get_post($id, ARRAY_A), get_post_meta($id)]; }
+    foreach ($ids as $id) {
+        $post = get_post($id, ARRAY_A);
+        if (!is_array($post)) { throw new RuntimeException('Missing plugin fixture post: '.$id); }
+        $data[$id] = [$post, get_post_meta($id)];
+    }
     return hash('sha256', wp_json_encode($data));
 }
 function shiki_plugin_tablepress_option($name) {
@@ -45,15 +49,20 @@ function shiki_plugin_tablepress_option($name) {
 }
 function shiki_plugin_settings($slug, $fixture) {
     switch ($slug) {
-        case 'google-site-kit': return ['admin_bar_menu_enabled'=>(bool)get_option('googlesitekit_admin_bar_menu_enabled')];
+        case 'google-site-kit':
+            $value = get_option('googlesitekit_admin_bar_menu_enabled', null);
+            if ($value === null) { throw new RuntimeException('Missing Site Kit fixture setting.'); }
+            return ['admin_bar_menu_enabled'=>(bool)$value];
         case 'contact-form-7': return ['form_content_and_meta'=>shiki_plugin_content_hash([$fixture['form']])];
         case 'wordpress-seo':
             $o = get_option('wpseo_titles', []);
-            return ['title-post'=>$o['title-post'] ?? null, 'metadesc-post'=>$o['metadesc-post'] ?? null];
+            if (!is_array($o) || !isset($o['title-post'], $o['metadesc-post'])) { throw new RuntimeException('Missing Yoast fixture settings.'); }
+            return ['title-post'=>$o['title-post'], 'metadesc-post'=>$o['metadesc-post']];
         case 'wp-super-cache':
             $text = is_file(WP_CONTENT_DIR.'/wp-cache-config.php') ? file_get_contents(WP_CONTENT_DIR.'/wp-cache-config.php') : '';
             preg_match('/^\s*\$cache_max_time\s*=\s*[\x27\x22]?([0-9]+)/m', $text, $m);
-            return ['cache_max_time'=>isset($m[1]) ? (int)$m[1] : null];
+            if (!isset($m[1])) { throw new RuntimeException('Missing Super Cache fixture setting.'); }
+            return ['cache_max_time'=>(int)$m[1]];
         case 'tablepress':
             // TablePress persists its option arrays as JSON strings, including while inactive.
             $o = shiki_plugin_tablepress_option('tablepress_plugin_options');
@@ -66,9 +75,18 @@ function shiki_plugin_settings($slug, $fixture) {
                 'table_content_and_meta'=>shiki_plugin_content_hash([$fixture['table_post']])];
         case 'wordfence':
             global $wpdb;
-            return ['deleteTablesOnDeact'=>$wpdb->get_var($wpdb->prepare(
-                'SELECT val FROM `'.$wpdb->prefix.'wfConfig` WHERE name = %s', 'deleteTablesOnDeact'))];
-        case 'updraftplus': return ['retained_local_backups'=>(int)get_option('updraft_retain')];
+            $table = $fixture['config_table'] ?? '';
+            if (!is_string($table) || !preg_match('/^[A-Za-z0-9_]+$/D', $table)
+                || !in_array($table, $wpdb->get_col('SHOW TABLES'), true)) {
+                throw new RuntimeException('Missing or case-mismatched Wordfence fixture table.');
+            }
+            $value = $wpdb->get_var($wpdb->prepare('SELECT val FROM `'.$table.'` WHERE name = %s', 'deleteTablesOnDeact'));
+            if ($value !== '0') { throw new RuntimeException('Wordfence keep-tables setting must be present and equal to 0.'); }
+            return ['deleteTablesOnDeact'=>$value];
+        case 'updraftplus':
+            $value = get_option('updraft_retain', null);
+            if ($value === null || !ctype_digit((string)$value)) { throw new RuntimeException('Missing UpdraftPlus fixture setting.'); }
+            return ['retained_local_backups'=>(int)$value];
     }
     throw new RuntimeException('Unknown plugin settings.');
 }
@@ -137,10 +155,21 @@ if ($phase === 'seed-plugin') {
             $p['posts'] = [$p['table_post'], $page];
             $f['urls']['tablepress'] = get_permalink($page);
             break;
-        case 'wordfence': wfConfig::set('deleteTablesOnDeact', '0'); break;
+        case 'wordfence':
+            $p['config_table'] = wfDB::networkTable('wfConfig');
+            wfConfig::set('deleteTablesOnDeact', '0');
+            break;
         case 'updraftplus': update_option('updraft_retain', 3); break;
     }
     $p['settings'] = shiki_plugin_settings($slug, $p);
+    $expected_settings = [
+        'google-site-kit'=>['admin_bar_menu_enabled'=>false],
+        'wordpress-seo'=>['title-post'=>'%%title%% %%sep%% %%sitename%%', 'metadesc-post'=>'CI synthetic Yoast description.'],
+        'wp-super-cache'=>['cache_max_time'=>1733],
+        'wordfence'=>['deleteTablesOnDeact'=>'0'],
+        'updraftplus'=>['retained_local_backups'=>3],
+    ];
+    if (isset($expected_settings[$slug]) && $p['settings'] !== $expected_settings[$slug]) { throw new RuntimeException('Plugin fixture settings were not persisted: '.$slug); }
     if ($slug === 'tablepress' && ($p['settings']['custom_css'] !== '.tablepress { border-spacing: 0; }'
         || $p['settings']['use_custom_css'] !== true)) { throw new RuntimeException('TablePress fixture settings were not persisted.'); }
     $p['content_hash'] = shiki_plugin_content_hash($p['posts']);
