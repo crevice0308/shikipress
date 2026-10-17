@@ -43,18 +43,18 @@ previous=39cefcf2adf81110e6f0a068ee75bec36f48cdf3
 git -C "$root" cat-file -e "$previous:shikipress/functions.php"
 git -C "$root" archive --format=zip --output="$state/updater-bootstrap-1.0.4.zip" "$previous" shikipress
 python3 "$root/tests/upgrade/verify-package.py" "$state/updater-bootstrap-1.0.4.zip" 1.0.4
-python3 "$root/tests/upgrade/verify-package.py" --build "$root/shikipress" "$state/updater-real-1.1.0.zip"
+python3 "$root/tests/upgrade/verify-package.py" --build "$root/shikipress" "$state/updater-real-1.1.1.zip"
 wp_ci theme install "$state/updater-bootstrap-1.0.4.zip" --force --activate
 wp_ci eval 'if (SHIKI_VERSION !== "1.0.4") { throw new RuntimeException("Historical 1.0.4 bootstrap failed"); }'
-wp_ci theme install "$state/updater-real-1.1.0.zip" --force --activate
-assert_retained manual-bootstrap-1.0.4-to-1.1.0
+wp_ci theme install "$state/updater-real-1.1.1.zip" --force --activate
+assert_retained manual-bootstrap-1.0.4-to-1.1.1
 assert_phase setup
 assert_phase security
 assert_retained rejected-packages
 assert_phase single
 assert_phase verify-single
 assert_retained single-synthetic-update
-wp_ci theme install "$state/updater-real-1.1.0.zip" --force --activate
+wp_ci theme install "$state/updater-real-1.1.1.zip" --force --activate
 assert_phase verify-restored restored-after-single
 assert_retained single-restored
 assert_phase child-setup
@@ -63,10 +63,10 @@ assert_phase bulk
 assert_phase verify-bulk
 assert_phase child-deactivate
 assert_phase child-cleanup
-wp_ci theme install "$state/updater-real-1.1.0.zip" --force --activate
+wp_ci theme install "$state/updater-real-1.1.1.zip" --force --activate
 assert_phase verify-restored restored-after-bulk
 assert_retained bulk-restored
-python3 "$root/tests/upgrade/verify-package.py" "$state/updater-real-1.1.0.zip" --installed "$wp_root/wp-content/themes"
+python3 "$root/tests/upgrade/verify-package.py" "$state/updater-real-1.1.1.zip" --installed "$wp_root/wp-content/themes"
 if [[ -f "$wp_root/wp-content/debug.log" ]]; then
   cp "$wp_root/wp-content/debug.log" "$reports/debug.log"
   if grep -E 'PHP (Fatal error|Parse error)|(Warning|Deprecated).*[/]shikipress[/]' "$reports/debug.log"; then exit 1; fi

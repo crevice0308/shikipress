@@ -10,6 +10,28 @@ file_put_contents( ABSPATH . 'wp-admin/includes/file.php', '<?php' );
 define( 'MINUTE_IN_SECONDS', 60 ); define( 'HOUR_IN_SECONDS', 3600 );
 class WP_Error { public $code; public function __construct( $code, $message = '' ) { $this->code = $code; } }
 class Theme_Upgrader {}
+// Explicit parser shim for focused tests. Native integration uses the real core parser.
+class WP_HTML_Tag_Processor {
+    private $html; private $cursor = 0; private $start; private $tag;
+    public function __construct( $html ) { $this->html = $html; }
+    public function next_tag( $name ) {
+        if ( ! preg_match( '/<a\b(?:[^\'">]|"[^"]*"|\'[^\']*\')*>/i', $this->html, $match, PREG_OFFSET_CAPTURE, $this->cursor ) ) { return false; }
+        $this->tag = $match[0][0]; $this->start = $match[0][1]; $this->cursor = $this->start + strlen( $this->tag ); return true;
+    }
+    public function get_attribute( $name ) {
+        if ( ! preg_match( '/\s' . preg_quote( $name, '/' ) . '=([\'"])(.*?)\1/s', $this->tag, $match ) ) { return null; }
+        return html_entity_decode( $match[2], ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+    }
+    public function has_class( $name ) { return in_array( $name, preg_split( '/\s+/', trim( (string) $this->get_attribute( 'class' ) ) ), true ); }
+    public function set_attribute( $name, $value ) {
+        $tag = preg_replace_callback( '/(\s' . preg_quote( $name, '/' ) . '=)([\'"])(.*?)\2/s', static function ( $match ) use ( $value ) {
+            return $match[1] . $match[2] . htmlspecialchars( $value, ENT_QUOTES | ENT_HTML5, 'UTF-8' ) . $match[2];
+        }, $this->tag );
+        $this->html = substr_replace( $this->html, $tag, $this->start, strlen( $this->tag ) ); $this->tag = $tag; $this->cursor = $this->start + strlen( $tag );
+    }
+    public function remove_class( $name ) { $classes = preg_split( '/\s+/', trim( (string) $this->get_attribute( 'class' ) ) ); $this->set_attribute( 'class', implode( ' ', array_values( array_diff( $classes, array( $name ) ) ) ) ); }
+    public function get_updated_html() { return $this->html; }
+}
 function __( $s, $domain = '' ) { return $s; }
 function is_wp_error( $x ) { return $x instanceof WP_Error; }
 function add_filter( ...$x ) {}
@@ -122,4 +144,30 @@ check( isset( $GLOBALS['cache']['update_themes']->response['shikipress'] ), 'par
 ShikiPress_Updater::switched_theme( 'Other', $other_theme );
 check( ! isset( $GLOBALS['cache']['update_themes']->response['shikipress'] ) && ! isset( $GLOBALS['cache']['update_themes']->no_update['shikipress'] ), 'switch away removes stale ShikiPress offers' );
 check( isset( $GLOBALS['cache']['update_themes']->response['other'] ) && isset( $GLOBALS['cache']['update_themes']->no_update['other'] ) && '1.1.0' === $GLOBALS['cache']['update_themes']->checked['shikipress'], 'switch cleanup preserves unrelated themes and checked versions' );
+// Core's real update HTML, including entity-encoded query separators and nonce.
+seed();
+$details = '<a href="https://github.com/crevice0308/shikipress/releases/tag/v2.0.0?TB_iframe=true&#038;width=1024&#038;height=800" class="thickbox open-plugin-details-modal" aria-label="View ShikiPress Ultimate version 2.0.0 details">View version 2.0.0 details</a>';
+$update_now = '<a href="http://fixture.invalid/wp-admin/update.php?action=upgrade-theme&amp;theme=shikipress&amp;_wpnonce=exact-NONCE" aria-label="Update ShikiPress Ultimate now" id="update-theme" data-slug="shikipress">update now</a>';
+$notice = '<p><strong>There is a new version. ' . $details . ' or ' . $update_now . '.</strong></p>';
+$prepared = array( 'shikipress' => array( 'id' => 'shikipress', 'hasUpdate' => true, 'active' => true, 'update' => $notice, 'actions' => array( 'delete' => 'keep-me' ) ), 'other' => array( 'id' => 'other', 'hasUpdate' => true, 'update' => $notice ) );
+$fixed = ShikiPress_Updater::prepare_themes( $prepared );
+check( str_contains( $fixed['shikipress']['update'], 'href="https://github.com/crevice0308/shikipress/releases/tag/v2.0.0"' ) && ! str_contains( $fixed['shikipress']['update'], 'TB_iframe' ), 'details href is the bare official stable release URL' );
+check( ! str_contains( $fixed['shikipress']['update'], 'thickbox' ) && ! str_contains( $fixed['shikipress']['update'], 'open-plugin-details-modal' ), 'both iframe/modal classes removed from details link' );
+check( str_contains( $fixed['shikipress']['update'], $update_now ) && $prepared['shikipress']['actions'] === $fixed['shikipress']['actions'], 'native Update now anchor and nonce remain byte-identical' );
+check( $prepared['other'] === $fixed['other'], 'unrelated theme update HTML unchanged' );
+check( $fixed === ShikiPress_Updater::prepare_themes( $fixed ), 'details conversion is idempotent' );
+$child = $prepared; $child['shikipress']['active'] = false; $child['child'] = array( 'id' => 'child', 'parent' => 'shikipress', 'active' => true, 'hasUpdate' => true, 'update' => $notice );
+$fixed_child = ShikiPress_Updater::prepare_themes( $child );
+check( $fixed['shikipress']['update'] === $fixed_child['shikipress']['update'] && $child['child'] === $fixed_child['child'], 'active child receives corrected parent details without editing child data' );
+foreach ( array( null, false, 'malformed', array(), array( 'shikipress' => false ), array( 'shikipress' => array( 'id' => 'shikipress', 'hasUpdate' => false, 'update' => $notice ) ), array( 'shikipress' => array( 'id' => 'shikipress', 'hasUpdate' => true, 'update' => array() ) ) ) as $bad ) {
+    check( $bad === ShikiPress_Updater::prepare_themes( $bad ), 'malformed or no-update prepared data left unchanged' );
+}
+foreach ( array( str_replace( 'crevice0308', 'other', $notice ), str_replace( 'v2.0.0?', 'v2.0.0-rc.1?', $notice ), str_replace( 'width=1024', 'width=1024&#038;redirect=evil', $notice ), str_replace( 'class="thickbox open-plugin-details-modal"', 'class="unrelated"', $notice ), '<a href="unterminated' ) as $bad_html ) {
+    $bad = $prepared; $bad['shikipress']['update'] = $bad_html; check( $bad === ShikiPress_Updater::prepare_themes( $bad ), 'unrelated or malformed details HTML left unchanged' );
+}
+$GLOBALS['installed']['UpdateURI'] = 'https://github.com/other/theme'; check( $prepared === ShikiPress_Updater::prepare_themes( $prepared ), 'different installed Update URI is not transformed' );
+$GLOBALS['installed']['UpdateURI'] = ShikiPress_Updater::URI;
+$GLOBALS['active_template'] = 'other'; check( $prepared === ShikiPress_Updater::prepare_themes( $prepared ), 'inactive unrelated template is not transformed' ); unset( $GLOBALS['active_template'] );
+$GLOBALS['multisite'] = true; check( $prepared === ShikiPress_Updater::prepare_themes( $prepared ), 'multisite prepared HTML left unchanged' ); $GLOBALS['multisite'] = false;
+check( 0 === count( $GLOBALS['calls'] ), 'details formatting performs no HTTP requests' );
 echo json_encode( array( 'php' => PHP_VERSION, 'passed' => $passed, 'status' => 'PASS' ) ) . "\n";

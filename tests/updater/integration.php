@@ -19,7 +19,8 @@ $fixture_dir = defined('SHIKI_UPDATER_FIXTURE_DIR') ? SHIKI_UPDATER_FIXTURE_DIR 
 if ($fixture_dir === '/updater-fixtures') {
     throw new RuntimeException('An explicit disposable fixture directory is required.');
 }
-const SHIKI_CI_UPDATE_VERSION = '1.1.1';
+const SHIKI_CI_BASE_VERSION = '1.1.1';
+const SHIKI_CI_UPDATE_VERSION = '1.1.2';
 const SHIKI_CI_UPDATE_API = 'https://api.github.com/repos/crevice0308/shikipress/releases/latest';
 const SHIKI_CI_UPDATE_REPO = 'https://github.com/crevice0308/shikipress';
 const SHIKI_CI_UPDATE_CACHE = 'shikipress_github_release_v1';
@@ -63,20 +64,20 @@ function shiki_updater_fixture_zip($name, $kind = 'valid') {
         $bytes = file_get_contents($file->getPathname());
         if ($kind !== 'baseline') {
             if ($relative === 'style.css') {
-                $bytes = preg_replace('/^Version:\s*1\.1\.0\s*$/m', 'Version: ' . SHIKI_CI_UPDATE_VERSION, $bytes, 1, $count);
+                $bytes = preg_replace('/^Version:\s*' . preg_quote(SHIKI_CI_BASE_VERSION, '/') . '\s*$/m', 'Version: ' . SHIKI_CI_UPDATE_VERSION, $bytes, 1, $count);
                 shiki_updater_assert($count === 1, 'rewrite_only_disposable_header_' . $name);
                 if ($kind === 'different-theme') { $bytes = str_replace('Text Domain: shikipress', 'Text Domain: unrelated-theme', $bytes); }
                 if ($kind === 'requirements-mismatch') { $bytes = str_replace('Requires PHP: 8.2', 'Requires PHP: 99.0', $bytes); }
             }
             if ($relative === 'functions.php') {
-                $bytes = preg_replace("/(define\(\s*['\"]SHIKI_VERSION['\"]\s*,\s*['\"])1\\.1\\.0(['\"]\s*\)) /x", '${1}' . SHIKI_CI_UPDATE_VERSION . '${2}', $bytes, 1, $count);
+                $bytes = preg_replace("/(define\(\s*['\"]SHIKI_VERSION['\"]\s*,\s*['\"])" . preg_quote(SHIKI_CI_BASE_VERSION, '/') . "(['\"]\s*\)) /x", '${1}' . SHIKI_CI_UPDATE_VERSION . '${2}', $bytes, 1, $count);
                 shiki_updater_assert($count === 1, 'rewrite_only_disposable_runtime_' . $name);
             }
         }
         $root = $kind === 'wrong-root' ? 'unrelated-theme' : 'shikipress';
         shiki_updater_assert($zip->addFromString($root . '/' . $relative, $bytes), 'zip_add_' . $name);
     }
-    if ($kind !== 'baseline') { $zip->addFromString(($kind === 'wrong-root' ? 'unrelated-theme' : 'shikipress') . '/ci-synthetic-update.txt', 'Disposable synthetic 1.1.1 fixture; never publish.'); }
+    if ($kind !== 'baseline') { $zip->addFromString(($kind === 'wrong-root' ? 'unrelated-theme' : 'shikipress') . '/ci-synthetic-update.txt', 'Disposable synthetic ' . SHIKI_CI_UPDATE_VERSION . ' fixture; never publish.'); }
     if ($kind === 'path-traversal') { $zip->addFromString('shikipress/../../ci-updater-escaped.txt', 'Must never be extracted.'); }
     // Use a fixed ordinary DEFLATE level for reproducible disposable fixtures.
     // Production validation remains unchanged by this test builder.
@@ -110,7 +111,7 @@ function shiki_updater_payload($mode) {
             ['name'=>'shikipress-' . $version . '.zip', 'state'=>'uploaded', 'size'=>filesize($zip), 'digest'=>'sha256:' . $sha256, 'browser_download_url'=>$package],
         ],
     ];
-    if ($mode === 'wrong-tag') { $release['tag_name'] = 'v1.1.2'; }
+    if ($mode === 'wrong-tag') { $release['tag_name'] = 'v1.1.3'; }
     if ($mode === 'prerelease') { $release['prerelease'] = true; }
     if ($mode === 'draft') { $release['draft'] = true; }
     return ['release'=>wp_json_encode($release), 'metadata'=>$body, 'metadata_url'=>$metadata_url, 'package'=>$package, 'zip'=>$zip];
@@ -160,6 +161,14 @@ function shiki_updater_detect($mode, $clear_release = true) {
     wp_update_themes();
     return get_site_transient('update_themes');
 }
+function shiki_updater_anchors($html) {
+    $processor = new WP_HTML_Tag_Processor($html);
+    $anchors = [];
+    while ($processor->next_tag('A')) {
+        $anchors[] = ['href'=>$processor->get_attribute('href'), 'class'=>$processor->get_attribute('class'), 'id'=>$processor->get_attribute('id'), 'target'=>$processor->get_attribute('target'), 'rel'=>$processor->get_attribute('rel')];
+    }
+    return $anchors;
+}
 function shiki_updater_request_count($url) {
     return count(array_filter($GLOBALS['shiki_updater_requests'], static fn($request) => $request['url'] === $url));
 }
@@ -184,11 +193,11 @@ function shiki_updater_upgrade($bulk) {
 }
 function shiki_updater_base_intact($state, $label) {
     shiki_updater_assert(shiki_updater_files(get_theme_root('shikipress') . '/shikipress') === $state['baseline_files'], $label . '_installed_bytes_unchanged');
-    shiki_updater_assert(wp_get_theme('shikipress')->get('Version') === '1.1.0', $label . '_version_unchanged');
+    shiki_updater_assert(wp_get_theme('shikipress')->get('Version') === SHIKI_CI_BASE_VERSION, $label . '_version_unchanged');
 }
 try {
     if ($phase === 'setup') {
-        shiki_updater_assert(SHIKI_VERSION === '1.1.0' && wp_get_theme('shikipress')->get('Version') === '1.1.0', 'genuine_current_release_installed');
+        shiki_updater_assert(SHIKI_VERSION === SHIKI_CI_BASE_VERSION && wp_get_theme('shikipress')->get('Version') === SHIKI_CI_BASE_VERSION, 'genuine_current_release_installed');
         shiki_updater_assert(!file_exists($fixture_dir), 'unused_fixture_directory');
         shiki_updater_assert(wp_mkdir_p($fixture_dir), 'create_fixture_directory');
         shiki_updater_assert(!file_exists(get_theme_root() . '/shikipress-ci-child'), 'unused_child_theme_slug');
@@ -204,6 +213,29 @@ try {
         shiki_updater_assert(($offer->response['shikipress']['new_version'] ?? null) === SHIKI_CI_UPDATE_VERSION, 'native_update_themes_detects_synthetic_stable');
         shiki_updater_assert(($offer->response['shikipress']['package'] ?? null) === shiki_updater_payload('valid')['package'], 'native_offer_exact_official_package');
         shiki_updater_assert(empty($offer->response['shikipress']['autoupdate']), 'update_offer_does_not_opt_into_automatic_updates');
+        $prepared_http_before = count($GLOBALS['shiki_updater_requests']);
+        $native_html = get_theme_update_available(wp_get_theme('shikipress'));
+        $prepared = wp_prepare_themes_for_js(['shikipress'=>wp_get_theme('shikipress')]);
+        $prepared = array_values(array_filter($prepared, static fn($theme) => ($theme['id'] ?? null) === 'shikipress'));
+        shiki_updater_assert(count($prepared) === 1 && $prepared[0]['hasUpdate'], 'native_prepared_theme_has_verified_update');
+        $prepared_anchors = shiki_updater_anchors($prepared[0]['update']);
+        $details_url = SHIKI_CI_UPDATE_REPO . '/releases/tag/v' . SHIKI_CI_UPDATE_VERSION;
+        $details = array_values(array_filter($prepared_anchors, static fn($anchor) => $anchor['href'] === $details_url));
+        shiki_updater_assert(count($details) === 1 && !str_contains((string)$details[0]['class'], 'thickbox') && !str_contains((string)$details[0]['class'], 'open-plugin-details-modal'), 'native_details_link_is_direct_without_modal_classes');
+        shiki_updater_assert(!str_contains($prepared[0]['update'], 'TB_iframe'), 'native_details_link_has_no_iframe_query');
+        $native_actions = array_values(array_filter(shiki_updater_anchors($native_html), static fn($anchor) => str_contains((string)$anchor['href'], 'action=upgrade-theme')));
+        $prepared_actions = array_values(array_filter($prepared_anchors, static fn($anchor) => str_contains((string)$anchor['href'], 'action=upgrade-theme')));
+        shiki_updater_assert(count($native_actions) === 1 && str_contains($native_actions[0]['href'], '_wpnonce=') && $native_actions === $prepared_actions, 'native_update_action_and_nonce_unchanged');
+        preg_match_all('~<a\b[^>]*>.*?</a>~is', $native_html, $native_tags);
+        preg_match_all('~<a\b[^>]*>.*?</a>~is', $prepared[0]['update'], $prepared_tags);
+        $native_tags = array_values(array_filter($native_tags[0], static fn($tag) => str_contains($tag, 'action=upgrade-theme')));
+        $prepared_tags = array_values(array_filter($prepared_tags[0], static fn($tag) => str_contains($tag, 'action=upgrade-theme')));
+        shiki_updater_assert(count($native_tags) === 1 && $native_tags === $prepared_tags, 'native_update_anchor_bytes_unchanged');
+        $other_prepared = ['ci-unrelated'=>['id'=>'ci-unrelated', 'hasUpdate'=>true, 'update'=>$native_html]];
+        shiki_updater_assert(apply_filters('wp_prepare_themes_for_js', $other_prepared) === $other_prepared, 'native_prepared_unrelated_theme_unchanged');
+        shiki_updater_assert(count($GLOBALS['shiki_updater_requests']) === $prepared_http_before, 'native_details_link_filter_makes_no_http_requests');
+
+
         $before = shiki_updater_request_count(SHIKI_CI_UPDATE_API);
         shiki_updater_detect('valid', false);
         shiki_updater_assert(shiki_updater_request_count(SHIKI_CI_UPDATE_API) === $before, 'verified_metadata_cache_avoids_repeated_api_reads');
@@ -321,7 +353,7 @@ try {
     } elseif ($phase === 'verify-restored') {
         $state = shiki_updater_state();
         shiki_updater_base_intact($state, 'restored');
-        shiki_updater_assert(SHIKI_VERSION === '1.1.0' && get_option('shikipress_version') === '1.1.0', 'real_release_runtime_restored');
+        shiki_updater_assert(SHIKI_VERSION === SHIKI_CI_BASE_VERSION && get_option('shikipress_version') === SHIKI_CI_BASE_VERSION, 'real_release_runtime_restored');
         shiki_updater_assert(get_stylesheet() === 'shikipress', 'real_parent_theme_active');
         shiki_updater_assert(get_site_option('auto_update_themes', null) === $state['auto_update_themes'], 'original_automatic_update_preferences_restored');
     } else { throw new RuntimeException('Unknown updater phase.'); }

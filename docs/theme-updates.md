@@ -2,10 +2,12 @@
 
 ShikiPress 1.1.0から、通常の単一サイトWordPressでは、公開GitHubリポジトリの正式ReleaseをWordPress標準のテーマ更新へ接続します。追加プラグイン、GitHubログイン、アクセストークンは不要です。
 
+1.1.0の更新検出・更新操作は利用できます。1.1.1では、WordPress管理画面のテーマ「詳細」を通常のGitHub Releaseリンクに変更し、iframe表示で内容が開けない問題を修正しています。1.1.0からは詳細ポップアップを開かず、標準の「今すぐ更新」で1.1.1へ更新できます。
+
 ## 最初の1回
 
 1. DBとwp-content全体の復元可能なバックアップを取ります。
-2. [正式Release](https://github.com/crevice0308/shikipress/releases/latest)のインストール用 `shikipress-1.1.0.zip` を入手します。GitHubのSource code ZIPは使いません。
+2. [正式Release](https://github.com/crevice0308/shikipress/releases/latest)のインストール用 `shikipress-1.1.1.zip` を入手します。GitHubのSource code ZIPは使いません。
 3. 1.0.4以前を使っている場合は、WordPressの「外観 → テーマ → 新しいテーマを追加 → テーマのアップロード」からZIPを選び、現在のテーマを置き換えます。旧版には更新検出コードがないため、この1回はZIPが必要です。
 4. ShikiPressまたはShikiPressを親にした子テーマを有効にします。
 

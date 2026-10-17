@@ -47,6 +47,39 @@ final class ShikiPress_Updater {
         );
     }
 
+    /** GitHub forbids framing; keep its release details a normal external link. */
+    public static function prepare_themes( $themes ) {
+        if ( ! is_array( $themes ) || is_multisite() || 'shikipress' !== get_template() ||
+            ! class_exists( 'WP_HTML_Tag_Processor', false ) ||
+            self::URI !== wp_get_theme( 'shikipress' )->get( 'UpdateURI' ) ) {
+            return $themes;
+        }
+        foreach ( $themes as $key => $theme ) {
+            if ( ! is_array( $theme ) || 'shikipress' !== ( $theme['id'] ?? null ) ||
+                true !== ( $theme['hasUpdate'] ?? null ) || ! is_string( $theme['update'] ?? null ) ||
+                strlen( $theme['update'] ) > 32768 ) {
+                continue;
+            }
+            $html = new WP_HTML_Tag_Processor( $theme['update'] );
+            while ( $html->next_tag( 'A' ) ) {
+                $href = $html->get_attribute( 'href' );
+                if ( ! is_string( $href ) || ! $html->has_class( 'thickbox' ) ||
+                    ! $html->has_class( 'open-plugin-details-modal' ) ||
+                    ! preg_match( '~^(' . preg_quote( self::URI, '~' ) . '/releases/tag/v([^/?#]+))(?:\?TB_iframe=true&width=1024&height=800)?$~D', $href, $match ) ||
+                    ! self::version( $match[2] ) ) {
+                    continue;
+                }
+                $html->set_attribute( 'href', $match[1] );
+                $html->remove_class( 'thickbox' );
+                $html->remove_class( 'open-plugin-details-modal' );
+            }
+            // The tag processor changes only selected attributes, preserving
+            // the native Update now anchor, its nonce, and the surrounding UI.
+            $themes[ $key ]['update'] = $html->get_updated_html();
+        }
+        return $themes;
+    }
+
     /** Remove this provider's stale offer before its code becomes inactive. */
     public static function switched_theme( $new_name, $new_theme ) {
         if ( 'shikipress' === $new_theme->get_template() ) {
@@ -503,3 +536,4 @@ final class ShikiPress_Updater {
 add_filter( 'update_themes_github.com', array( 'ShikiPress_Updater', 'filter_update' ), 10, 4 );
 add_filter( 'upgrader_pre_download', array( 'ShikiPress_Updater', 'pre_download' ), 10, 4 );
 add_action( 'switch_theme', array( 'ShikiPress_Updater', 'switched_theme' ), 10, 2 );
+add_filter( 'wp_prepare_themes_for_js', array( 'ShikiPress_Updater', 'prepare_themes' ) );

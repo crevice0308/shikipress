@@ -22,7 +22,7 @@ PUBLISHER = {'__name__': 'offline_release_publisher'}
 exec(compile(CODE, str(WORKFLOW), 'exec'), PUBLISHER)
 
 
-def fixture(version='1.1.0', header=None):
+def fixture(version='1.1.1', header=None):
     if header is None:
         header = (f'/*\nTheme Name: ShikiPress Ultimate\nVersion: {version}\n'
                   'Requires at least: 6.6\nRequires PHP: 8.2\nText Domain: shikipress\n*/\n')
@@ -46,7 +46,7 @@ def reference_zip(files):
     return output.getvalue()
 
 
-def specification(files, version='1.1.0', updater=True):
+def specification(files, version='1.1.1', updater=True):
     spec = {'version': version, 'commit': None, 'prerelease': False,
             'sha256': hashlib.sha256(reference_zip(files)).hexdigest(), 'files': len(files)}
     if updater:
@@ -80,20 +80,20 @@ class PublisherTests(unittest.TestCase):
             'compatibility.yml': 'WordPress and PHP compatibility',
             'browser-regression.yml': 'Offline browser regression',
         })
-        self.assertIn("latest['tag_name'] == 'v1.1.0'", CODE)
+        self.assertIn("latest['tag_name'] == 'v1.1.1'", CODE)
 
     def test_metadata_comes_from_the_exact_installable_zip(self):
-        data = self.assets['shikipress-1.1.0.zip']
+        data = self.assets['shikipress-1.1.1.zip']
         metadata = json.loads(self.assets['shikipress-update.json'])
         self.assertEqual(metadata, {
-            'schema': 1, 'theme': 'shikipress', 'version': '1.1.0',
+            'schema': 1, 'theme': 'shikipress', 'version': '1.1.1',
             'requires': '6.6', 'requires_php': '8.2', 'tested': '7.1.3',
-            'package': 'https://github.com/crevice0308/shikipress/releases/download/v1.1.0/shikipress-1.1.0.zip',
+            'package': 'https://github.com/crevice0308/shikipress/releases/download/v1.1.1/shikipress-1.1.1.zip',
             'sha256': hashlib.sha256(data).hexdigest(), 'size': len(data),
         })
         self.assertEqual(data, reference_zip(self.files))
         self.assertEqual(self.assets['SHA256SUMS.txt'],
-                         f'{metadata["sha256"]}  shikipress-1.1.0.zip\n'.encode())
+                         f'{metadata["sha256"]}  shikipress-1.1.1.zip\n'.encode())
         self.assertEqual(self.assets, PUBLISHER['package'](self.files, self.spec))
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             self.assertEqual(archive.read('shikipress/style.css'), self.files['shikipress/style.css'])
@@ -102,7 +102,7 @@ class PublisherTests(unittest.TestCase):
     def test_reviewed_configuration_and_historical_pins(self):
         specs = PUBLISHER['RELEASES']
         self.assertEqual([(s['version'], s['commit'], s['sha256'], s['files'], s['prerelease'])
-                          for s in specs[:-1]], [
+                          for s in specs[:3]], [
             ('1.0.2', '9544985a466e3d8b3d8e5953d261a6aadf038696',
              '0fc2e436a7907ba482d59e3934b60f0cc354667286b1089a3d2dc26d11717704', 44, True),
             ('1.0.3', 'a671266dc0e16b71daaf88e7f32e833842da27fb',
@@ -110,8 +110,13 @@ class PublisherTests(unittest.TestCase):
             ('1.0.4', '39cefcf2adf81110e6f0a068ee75bec36f48cdf3',
              'fbe53ab06290577c72afc17b9dc3da76fb2fe9cb693e35ba88238f78e88d1386', 44, False),
         ])
-        self.assertTrue(all('update' not in spec for spec in specs[:-1]))
-        self.assertEqual(specs[-1]['version'], '1.1.0')
+        self.assertTrue(all('update' not in spec for spec in specs[:3]))
+        self.assertEqual(specs[3], {
+            'version': '1.1.0', 'commit': 'd35fc242b585251e698ee4097a9d0303e2f42b13', 'prerelease': False,
+            'sha256': 'a300419c39f6bf132a3b2bb6b74b6b57f7577668586bc62eb2a9c5a38b7584b9', 'files': 45,
+            'update': {'requires': '6.6', 'requires_php': '8.2', 'tested': '7.1.3'},
+        })
+        self.assertEqual(specs[-1]['version'], '1.1.1')
         self.assertIsNone(specs[-1]['commit'])
         self.assertFalse(specs[-1]['prerelease'])
         self.assertEqual(specs[-1]['update'], {'requires': '6.6', 'requires_php': '8.2', 'tested': '7.1.3'})
@@ -120,13 +125,13 @@ class PublisherTests(unittest.TestCase):
     def test_malformed_or_conflicting_headers_fail_closed(self):
         header = self.files['shikipress/style.css'].decode()
         changes = [
-            ('Version: 1.1.0', 'Version: 1.1.0-rc.1'),
-            ('Version: 1.1.0', 'Version: 1.1'),
-            ('Version: 1.1.0', 'Version: 01.1.0'),
-            ('Version: 1.1.0', 'Version: 1.1.0 trailing'),
-            ('Version: 1.1.0', 'Version: 1.2.0'),
-            ('Version: 1.1.0', 'Version: 1.1.0\nVersion: 9.9.9'),
-            ('Version: 1.1.0', ''),
+            ('Version: 1.1.1', 'Version: 1.1.1-rc.1'),
+            ('Version: 1.1.1', 'Version: 1.1'),
+            ('Version: 1.1.1', 'Version: 01.1.1'),
+            ('Version: 1.1.1', 'Version: 1.1.1 trailing'),
+            ('Version: 1.1.1', 'Version: 1.2.0'),
+            ('Version: 1.1.1', 'Version: 1.1.1\nVersion: 9.9.9'),
+            ('Version: 1.1.1', ''),
             ('Requires at least: 6.6', 'Requires at least: 6.7'),
             ('Requires at least: 6.6', 'Requires at least: 6.6\nRequires at least: 6.6'),
             ('Requires at least: 6.6', 'Requires at least: 6.6-rc1'),
@@ -159,7 +164,7 @@ class PublisherTests(unittest.TestCase):
 
     def test_zip_checksum_and_pending_pins_fail_closed(self):
         with self.assertRaisesRegex(RuntimeError, 'Updater ZIP checksum mismatch'):
-            PUBLISHER['update_metadata'](self.assets['shikipress-1.1.0.zip'] + b'changed', self.spec)
+            PUBLISHER['update_metadata'](self.assets['shikipress-1.1.1.zip'] + b'changed', self.spec)
         with self.assertRaisesRegex(RuntimeError, 'Pinned package checksum mismatch'):
             PUBLISHER['package'](self.files, dict(self.spec, sha256='0' * 64))
         with self.assertRaisesRegex(RuntimeError, 'Reviewed package pins are incomplete'):
@@ -187,6 +192,26 @@ class PublisherTests(unittest.TestCase):
                                           'state': 'uploaded', 'size': 1})
                 with self.assertRaisesRegex(RuntimeError, 'Unexpected existing release assets'):
                     PUBLISHER['verify_assets'](release, assets, True)
+
+    def test_historical_updater_release_keeps_three_assets_without_mutation(self):
+        files = fixture('1.1.0')
+        spec = specification(files, '1.1.0')
+        spec['commit'] = PUBLISHER['RELEASES'][3]['commit']
+        assets = PUBLISHER['package'](files, spec)
+        self.assertEqual(set(assets), {'shikipress-1.1.0.zip', 'SHA256SUMS.txt', 'shikipress-update.json'})
+        self.assertEqual(json.loads(assets['shikipress-update.json'])['version'], '1.1.0')
+        release = release_state(spec, spec['commit'], assets)
+        original = copy.deepcopy(release)
+        api = mock.Mock(side_effect=lambda path, **kwargs:
+                        assets[next(item['name'] for item in release['assets']
+                                    if path == f'releases/assets/{item["id"]}')])
+        with mock.patch.dict(PUBLISHER, api=api):
+            PUBLISHER['verify_release'](release, spec, spec['commit'], assets, True)
+            api.reset_mock()
+            PUBLISHER['publish']({'spec': spec, 'source': spec['commit'], 'tag': 'v1.1.0',
+                                  'release': release, 'assets': assets}, self.source, [])
+            api.assert_not_called()
+        self.assertEqual(release, original)
 
     def test_prepare_existing_historical_source_stays_pinned(self):
         for configured in PUBLISHER['RELEASES'][:-1]:
@@ -246,7 +271,7 @@ class PublisherTests(unittest.TestCase):
             return copy.deepcopy(release)
 
         def upload(command, check, timeout):
-            self.assertEqual(command[:4], ['gh', 'release', 'upload', 'v1.1.0'])
+            self.assertEqual(command[:4], ['gh', 'release', 'upload', 'v1.1.1'])
             self.assertEqual(command[5:], ['--repo', 'crevice0308/shikipress'])
             name = Path(command[4]).name
             self.assertNotIn(name, remote)
@@ -256,7 +281,7 @@ class PublisherTests(unittest.TestCase):
                                       'state': 'uploaded', 'size': len(remote[name])})
             uploads.append(name)
 
-        item = {'spec': self.spec, 'source': self.source, 'tag': 'v1.1.0',
+        item = {'spec': self.spec, 'source': self.source, 'tag': 'v1.1.1',
                 'release': copy.deepcopy(release), 'assets': self.assets}
         with mock.patch.dict(PUBLISHER, api=api, current_main=mock.Mock(),
                              ci_gate=lambda sha: evidence, find_release=lambda tag: copy.deepcopy(release),
@@ -275,7 +300,7 @@ class PublisherTests(unittest.TestCase):
         self.assertFalse(release['draft'])
 
     def test_resume_only_missing_assets_without_overwriting(self):
-        writes, uploads, release = self.run_draft_publication(initial_names=('shikipress-1.1.0.zip',))
+        writes, uploads, release = self.run_draft_publication(initial_names=('shikipress-1.1.1.zip',))
         self.assertEqual(set(uploads), {'SHA256SUMS.txt', 'shikipress-update.json'})
         self.assertEqual(len(writes), 1)
 
