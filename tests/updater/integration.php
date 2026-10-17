@@ -4,9 +4,8 @@ if (!defined('SHIKI_TEST_ENV') || SHIKI_TEST_ENV !== true || !defined('ABSPATH')
     || wp_get_environment_type() !== 'local' || !defined('DISABLE_WP_CRON') || DISABLE_WP_CRON !== true) {
     throw new RuntimeException('A marked disposable local WordPress installation is required.');
 }
-if (!defined('WP_ADMIN') || !WP_ADMIN) {
-    throw new RuntimeException('Run with wp --context=admin eval-file so real upgrader admin hooks are available.');
-}
+// A normal WP-CLI bootstrap is sufficient. Load the real admin/upgrader APIs
+// directly; WP-CLI's synthetic admin context can fail during menu setup.
 require_once ABSPATH . 'wp-admin/includes/admin.php';
 require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
 wp_set_current_user(1);

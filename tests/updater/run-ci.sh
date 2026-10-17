@@ -11,7 +11,8 @@ grep -Fxq 'Disposable ShikiPress regression database; never production' "$state/
 wp_root="$state/wordpress"
 reports="$state/reports/updater"
 export SHIKI_CI_STATE="$state"
-wp_ci() { wp --path="$wp_root" --allow-root --context=admin "$@"; }
+# Avoid WP-CLI's synthetic admin menu bootstrap; the fixture loads real upgrader APIs.
+wp_ci() { wp --path="$wp_root" --allow-root --context=cli "$@"; }
 [[ "$(wp_ci config get DB_HOST --type=constant)" == 127.0.0.1 ]] || { echo 'Only local MySQL is allowed'; exit 1; }
 db="$(wp_ci config get DB_NAME --type=constant)"
 [[ "$db" =~ ^shikipress_ci_[0-9]+_[0-9]+$ ]] || { echo 'Not a disposable CI database'; exit 1; }
