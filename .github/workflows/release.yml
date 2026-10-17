@@ -1,0 +1,376 @@
+name: Publish verified theme releases
+
+on:
+  workflow_run:
+    workflows: [WordPress and PHP compatibility, Offline browser regression]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+# Ordinary CI workflows retain contents: read. This workflow has no default grants.
+permissions: {}
+concurrency:
+  group: shikipress-bounded-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: >-
+      github.repository == 'crevice0308/shikipress' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Verify exact main CI, build pinned ZIPs, and publish once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_HOST: github.com
+          GH_PROMPT_DISABLED: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYTHON'
+          """Bounded release publisher. This file is embedded verbatim in release.yml.
+          Only this reviewed code executes; theme blobs and all CI results remain data.
+          """
+          import base64
+          import hashlib
+          import io
+          import json
+          import os
+          from pathlib import Path, PurePosixPath
+          import re
+          import subprocess
+          import tempfile
+          import zipfile
+          
+          REPOSITORY = 'crevice0308/shikipress'
+          BASELINE = '9544985a466e3d8b3d8e5953d261a6aadf038696'
+          WORKFLOWS = {
+              'compatibility.yml': 'WordPress and PHP compatibility',
+              'browser-regression.yml': 'Offline browser regression',
+          }
+          RELEASES = (
+              {'version': '1.0.2', 'commit': BASELINE, 'prerelease': True,
+               'sha256': '0fc2e436a7907ba482d59e3934b60f0cc354667286b1089a3d2dc26d11717704', 'files': 44},
+              {'version': '1.0.3', 'commit': None, 'prerelease': False,
+               'sha256': 'e83da81eb6330a27be5ffce9c9809d19afc455b5745152c77965ca017b0d23b7', 'files': 44},
+          )
+          PREFIX = f'repos/{REPOSITORY}/'
+          BLOBS = {}
+          
+          
+          def require(value, message):
+              if not value:
+                  raise RuntimeError(message)
+          
+          
+          def api(path, method='GET', data=None, missing=False, binary=False):
+              """Never retry writes or mistake denied/rate-limited reads for absence."""
+              require(not path.startswith('/') and '://' not in path, 'Unexpected API destination')
+              command = ['gh', 'api', '--hostname', 'github.com', PREFIX + path,
+                         '--method', method, '-H', 'X-GitHub-Api-Version: 2022-11-28',
+                         '-H', 'Accept: application/octet-stream' if binary else 'Accept: application/vnd.github+json']
+              if data is not None:
+                  command += ['--input', '-']
+              result = subprocess.run(command, input=None if data is None else json.dumps(data).encode(),
+                                      capture_output=True, timeout=120, check=False)
+              if result.returncode:
+                  try:
+                      error = json.loads(result.stdout)
+                  except (ValueError, UnicodeDecodeError):
+                      error = {}
+                  if missing and str(error.get('status')) == '404':
+                      return None
+                  raise RuntimeError(f'{method} {path} failed: {result.stderr.decode(errors="replace").strip()}')
+              return result.stdout if binary else json.loads(result.stdout)
+          
+          
+          def trusted_run(run, sha):
+              return (run.get('head_sha') == sha and run.get('head_branch') == 'main'
+                      and run.get('event') == 'push'
+                      and run.get('head_repository', {}).get('full_name') == REPOSITORY
+                      and run.get('repository', {}).get('full_name') == REPOSITORY)
+          
+          
+          def ci_gate(sha):
+              """Latest push run and current attempt must pass; earlier green runs cannot mask red."""
+              evidence = []
+              for filename, name in WORKFLOWS.items():
+                  result = api(f'actions/workflows/{filename}/runs?branch=main&event=push&head_sha={sha}&per_page=100')
+                  require(result['total_count'] <= 100, 'Too many matching CI runs; review required')
+                  runs = [run for run in result['workflow_runs'] if trusted_run(run, sha)]
+                  if not runs:
+                      print(f'Waiting for {name} on {sha}.')
+                      return None
+                  latest = max(runs, key=lambda run: (run['run_number'], run['id']))
+                  run = api(f'actions/runs/{latest["id"]}')
+                  require(trusted_run(run, sha), 'CI run identity changed')
+                  require(run['path'] == f'.github/workflows/{filename}' and run['name'] == name,
+                          'Unexpected CI workflow identity')
+                  if run['status'] != 'completed' or run['conclusion'] != 'success':
+                      print(f'Not releasing: {name} is {run["status"]}/{run.get("conclusion")}.')
+                      return None
+                  evidence.append({'id': run['id'], 'attempt': run['run_attempt'], 'url': run['html_url']})
+              return evidence
+          
+          
+          def current_main(sha):
+              ref = api('git/ref/heads/main')
+              require(ref['object']['type'] == 'commit' and ref['object']['sha'] == sha,
+                      'Main moved; wait for successful CI on the new main commit')
+          
+          
+          def ancestor(sha, main):
+              require(bool(re.fullmatch('[0-9a-f]{40}', sha)), 'Invalid source commit')
+              comparison = api(f'compare/{sha}...{main}')
+              require(comparison['status'] in ('ahead', 'identical'), 'Release source is not an ancestor of trusted main')
+          
+          
+          def blob(sha):
+              if sha not in BLOBS:
+                  entry = api(f'git/blobs/{sha}')
+                  require(entry['encoding'] == 'base64', 'Unexpected blob encoding')
+                  data = base64.b64decode(entry['content'])
+                  require(hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest() == sha,
+                          'Git blob integrity mismatch')
+                  BLOBS[sha] = data
+              return BLOBS[sha]
+          
+          
+          def theme_at(sha):
+              commit = api(f'git/commits/{sha}')
+              require(commit['sha'] == sha, 'Source commit changed')
+              tree = api(f'git/trees/{commit["tree"]["sha"]}?recursive=1')
+              require(not tree.get('truncated'), 'Truncated source tree')
+              files = {}
+              for entry in tree['tree']:
+                  name = entry['path']
+                  if not name.startswith('shikipress/'):
+                      continue
+                  if entry['type'] == 'tree':
+                      continue
+                  require(entry['type'] == 'blob' and entry['mode'] == '100644', 'Non-regular theme source refused')
+                  require(name not in files, 'Duplicate source path')
+                  files[name] = blob(entry['sha'])
+              return files
+          
+          
+          def package(files, spec):
+              """Byte-identical settings to the reviewed scripts/package.py, without executing it."""
+              require(len(files) == spec['files'], 'Theme file count mismatch')
+              for name, data in files.items():
+                  parts = PurePosixPath(name).parts
+                  require(name == '/'.join(parts) and len(parts) >= 2 and parts[0] == 'shikipress'
+                          and all(part not in ('', '.', '..') and not part.startswith('.') for part in parts)
+                          and '\\' not in name, 'Unsafe theme path')
+                  suffix = PurePosixPath(name).suffix
+                  require(suffix in {'.php', '.css', '.js', '.json', '.svg', '.png'}
+                          or name == 'shikipress/LICENSE', 'Unexpected theme file type')
+                  if suffix in {'.php', '.js', '.css', '.json'}:
+                      require(not re.search(r"define\s*\(\s*['\"]SHIKIPRESS_DEEPL_KEY['\"]\s*,", data.decode()),
+                              'Embedded key definition refused')
+              for name in ('style.css', 'index.php', 'functions.php', 'theme.json', 'LICENSE'):
+                  require('shikipress/' + name in files, 'Required theme file missing')
+              version = re.search(r'^Version:\s*(\S+)', files['shikipress/style.css'].decode(), re.M)
+              require(version and version[1] == spec['version'], 'Theme version mismatch')
+              require(f"define( 'SHIKI_VERSION', '{spec['version']}' );" in files['shikipress/functions.php'].decode(),
+                      'Bootstrap version mismatch')
+              output = io.BytesIO()
+              with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+                  for name in sorted(files):
+                      info = zipfile.ZipInfo(name, date_time=(2026, 10, 17, 0, 0, 0))
+                      info.compress_type = zipfile.ZIP_DEFLATED
+                      info.external_attr = 0o100644 << 16
+                      archive.writestr(info, files[name])
+              data = output.getvalue()
+              with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                  require(archive.testzip() is None and set(archive.namelist()) == set(files), 'ZIP verification failed')
+                  require(all(archive.read(name) == value for name, value in files.items()), 'ZIP/source mismatch')
+              require(hashlib.sha256(data).hexdigest() == spec['sha256'], 'Pinned package checksum mismatch')
+              filename = f'shikipress-{spec["version"]}.zip'
+              return {filename: data, 'SHA256SUMS.txt': f'{spec["sha256"]}  {filename}\n'.encode()}
+          
+          
+          def tag_commit(tag):
+              ref = api(f'git/ref/tags/{tag}', missing=True)
+              if ref is None:
+                  return None
+              obj = ref['object']
+              # Accept existing annotated tags, but never move or replace any tag.
+              for unused in range(5):
+                  if obj['type'] == 'commit':
+                      require(bool(re.fullmatch('[0-9a-f]{40}', obj['sha'])), 'Invalid tag target')
+                      return obj['sha']
+                  require(obj['type'] == 'tag', 'Tag does not resolve to a commit')
+                  obj = api(f'git/tags/{obj["sha"]}')['object']
+              raise RuntimeError('Excessively nested annotated tag')
+          
+          
+          def marker(spec, sha):
+              return f'<!-- shikipress-bounded-release:v1 {spec["version"]} {sha} {spec["sha256"]} -->'
+          
+          
+          def verify_assets(release, assets, complete):
+              actual = release.get('assets', [])
+              require(len(actual) == len({item['name'] for item in actual}), 'Duplicate release assets')
+              require({item['name'] for item in actual} <= set(assets), 'Unexpected existing release assets')
+              if complete:
+                  require({item['name'] for item in actual} == set(assets), 'Published release is missing expected assets')
+              for item in actual:
+                  expected = assets[item['name']]
+                  require(item['state'] == 'uploaded' and item['size'] == len(expected), 'Existing asset size/state conflict')
+                  require(api(f'releases/assets/{item["id"]}', binary=True) == expected,
+                          'Existing release asset differs; refusing overwrite')
+          
+          
+          def verify_release(release, spec, sha, assets, complete):
+              require(release['tag_name'] == f'v{spec["version"]}'
+                      and release['target_commitish'] == sha
+                      and release['prerelease'] == spec['prerelease']
+                      and marker(spec, sha) in (release.get('body') or ''), 'Existing release metadata conflict')
+              verify_assets(release, assets, complete)
+          
+          
+          def find_release(tag):
+              # List releases explicitly: the by-tag endpoint is documented for published
+              # releases, so it must not be used to infer that an interrupted draft is absent.
+              matches = []
+              for page in range(1, 101):
+                  releases = api(f'releases?per_page=100&page={page}')
+                  matches.extend(release for release in releases if release['tag_name'] == tag)
+                  if len(releases) < 100:
+                      require(len(matches) <= 1, 'Duplicate releases for one tag; review required')
+                      return matches[0] if matches else None
+              raise RuntimeError('Release listing exceeded safe pagination bound')
+          
+          
+          def prepare(spec, sha):
+              tag = f'v{spec["version"]}'
+              release = find_release(tag)
+              target = tag_commit(tag)
+              source = spec['commit'] or sha
+              # Published releases remain unchanged on later documentation-only pushes.
+              if release is not None and not release['draft'] and spec['commit'] is None:
+                  require(target is not None, 'Published release has no tag')
+                  source = target
+              ancestor(source, sha)
+              require(target is None or target == source, f'{tag} already points to a different commit')
+              assets = package(theme_at(source), spec)
+              if release is not None:
+                  verify_release(release, spec, source, assets, not release['draft'])
+                  require(not release.get('immutable') or not release['draft'], 'Immutable draft cannot be resumed')
+              return {'spec': spec, 'source': source, 'tag': tag, 'release': release, 'assets': assets}
+          
+          
+          def publish(item, main, evidence):
+              spec, source, tag, release, assets = (item[key] for key in ('spec', 'source', 'tag', 'release', 'assets'))
+              if release is not None and not release['draft']:
+                  print(f'{tag} already published and verified; leaving it unchanged.')
+                  return
+              current_main(main)
+              require(ci_gate(main) == evidence, 'CI gate changed before publication')
+              observed = find_release(tag)
+              require((observed or {}).get('id') == (release or {}).get('id'),
+                      'Release state changed before publication; refusing duplicate creation')
+              existing_target = tag_commit(tag)
+              require(existing_target in (None, source), 'Tag changed before publication')
+              if existing_target is None:
+                  api('git/refs', 'POST', {'ref': f'refs/tags/{tag}', 'sha': source})
+              require(tag_commit(tag) == source, 'Created tag verification failed')
+              if release is None:
+                  detail = ('Historical 1.0.2 baseline, marked prerelease and not latest. The 44 original theme files '
+                            'are unchanged; the installable ZIP is deterministically repackaged from the pinned baseline source. '
+                            'Known issues retained for historical reproducibility include long mobile site-title overflow, '
+                            'narrow-screen fixed-width advertising layout, and synchronous no-fill handling. Prefer 1.0.3 for new installs.'
+                            if spec['prerelease'] else
+                            'Stable 1.0.3 release. Both full CI workflows passed on the exact tagged source commit. '
+                            'Coverage includes native PHP syntax checks, disposable MySQL-backed WordPress upgrade/retention fixtures, '
+                            'and offline Chromium layout/ad-state regressions. This does not establish compatibility with all '
+                            'plugins, real advertising providers, real-device browsers, hosting environments, or future WordPress/PHP releases. '
+                            'Fixed-width ad tags require their minimum width to be configured, and reserved ad height must match '
+                            'the expected creative height; unknown fixed widths and oversized creatives are not automatically corrected.')
+                  body = (f'{detail}\n\nSource commit: {source}\n\nInstall the shikipress-{spec["version"]}.zip asset '
+                          '(the GitHub-generated source archive also contains development files). '
+                          'SHA256SUMS.txt verifies the installable theme ZIP. Back up the database and wp-content/uploads '
+                          'before updating.\n\nTested scope and exclusions: '
+                          f'https://github.com/{REPOSITORY}/blob/{main}/docs/verification.md\n'
+                          'Advertising configuration: '
+                          f'https://github.com/{REPOSITORY}/blob/{main}/docs/ads-guide.md\n'
+                          '\nValidation commit: ' + main + '\n'
+                          + '\n'.join(f'- {run["url"]} (attempt {run["attempt"]})' for run in evidence)
+                          + '\n\n' + marker(spec, source))
+                  release = api('releases', 'POST', {'tag_name': tag, 'target_commitish': source,
+                                'name': f'ShikiPress {spec["version"]}', 'body': body, 'draft': True,
+                                'prerelease': spec['prerelease'], 'make_latest': 'false'})
+              else:
+                  release = api(f'releases/{release["id"]}')
+              require(release['draft'] and not release.get('immutable'), 'Release is no longer an editable draft')
+              verify_release(release, spec, source, assets, False)
+              existing = {asset['name'] for asset in release['assets']}
+              with tempfile.TemporaryDirectory(prefix='shikipress-release-') as temporary:
+                  for name, data in assets.items():
+                      if name in existing:
+                          continue
+                      path = Path(temporary) / name
+                      path.write_bytes(data)
+                      # No --clobber and no deletion, including retries or partial failures.
+                      subprocess.run(['gh', 'release', 'upload', tag, str(path), '--repo', REPOSITORY],
+                                     check=True, timeout=180)
+              release = api(f'releases/{release["id"]}')
+              require(release['draft'], 'Release changed while uploading')
+              verify_release(release, spec, source, assets, True)
+              current_main(main)
+              require(ci_gate(main) == evidence and tag_commit(tag) == source, 'Final release gate changed')
+              # Publish only after all verified assets exist; compatible with GitHub immutable releases.
+              published = api(f'releases/{release["id"]}', 'PATCH',
+                              {'draft': False, 'prerelease': spec['prerelease'],
+                               'make_latest': 'false' if spec['prerelease'] else 'true'})
+              require(not published['draft'], 'Release publication was not confirmed')
+              verify_release(published, spec, source, assets, True)
+              print(f'Published and verified: {published["html_url"]}')
+          
+          
+          def main():
+              require(os.environ['GITHUB_REPOSITORY'] == REPOSITORY, 'Wrong repository')
+              require(os.environ['GITHUB_REF'] == 'refs/heads/main', 'Trusted main only')
+              sha = os.environ['GITHUB_SHA']
+              require(bool(re.fullmatch('[0-9a-f]{40}', sha)), 'Invalid workflow source commit')
+              event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
+              event_name = os.environ['GITHUB_EVENT_NAME']
+              if event_name == 'workflow_run':
+                  run = event['workflow_run']
+                  if not (trusted_run(run, sha) and run['conclusion'] == 'success'
+                          and run['name'] in WORKFLOWS.values()):
+                      print('Ignoring stale, unsuccessful, or untrusted CI event.')
+                      return
+              else:
+                  require(event_name == 'workflow_dispatch', 'Unsupported release trigger')
+              current_main(sha)
+              evidence = ci_gate(sha)
+              if evidence is None:
+                  print('No release changes. The next successful required CI completion triggers another check.')
+                  return
+              # Verify every package and all existing release state before the first mutation.
+              prepared = [prepare(spec, sha) for spec in RELEASES]
+              # A new stable source must itself match the bounded package, even if an older release exists.
+              package(theme_at(sha), RELEASES[-1])
+              for item in prepared:
+                  publish(item, sha, evidence)
+              latest = api('releases/latest')
+              require(latest['tag_name'] == 'v1.0.3' and not latest['draft'] and not latest['prerelease'],
+                      'Stable/latest status differs; review required (nothing will be overwritten)')
+              print('Both bounded releases and stable/latest designation verified.')
+          
+          
+          if __name__ == '__main__':
+              main()
+          PYTHON

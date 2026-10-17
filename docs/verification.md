@@ -42,9 +42,20 @@
 - PHP8.2.33→8.3.33→8.4.25→8.5.10と順に切り替えても同一DB/画像の13保全判定すべて合格。1.0.3テーマの44ファイルが配布ZIPと完全一致することも確認しました。
 - 更新後ホームHTTP200。WASM内のCAファイル不足で更新確認通信の警告は発生しましたが、TLS検証付きcurlで取得した公式チェックサムにより更新後のWordPressコア3,338ファイルすべて一致・欠落/旧コア残存なしを別途確認しました。証明書検証の無効化は行っていません。
 
+## GitHub Actions・ネイティブMySQLの実測
+
+コミット`c8dfab8daae40a396465676368c9e338cc1a0b1f`で[互換性CI](https://github.com/crevice0308/shikipress/actions/runs/39026335309)と[ブラウザ回帰CI](https://github.com/crevice0308/shikipress/actions/runs/39026335291)がすべて合格しました。
+
+- MySQL8.0の使い捨てDBで、WordPress6.6→7.1.3、テーマ1.0.2の同版再インストールと1.0.2→1.0.3標準ZIP更新、同じDB/画像のままPHP8.2→8.5および8.3→8.4を検査。各段階の13保全判定がすべて合格。
+- ネイティブPHP8.2/8.3/8.4/8.5の構文・配布物検査、Chromiumの広告/画面回帰も合格。
+- 最初のCIではfixtureのパーマリンク設定直後にWordPressの内部状態が更新されず、更新前スナップショットのURLだけ誤っていました。標準のrewrite設定APIで初期化するよう修正。URL比較は緩和せず、意図的なslug変更を検出する負例も確認しました。テーマ本体の変更による記事消失ではありません。
+- SQLite-WASM検証とネイティブMySQL検証は別々に実行した結果です。実サイトの既存データ・プラグイン構成の検証ではありません。
+
 ## 継続検査
 
-GitHub Actionsはcontents:readのみで、PHP8.2〜8.5の構文検査、MySQL8.0によるWordPress6.6→固定版7.1.3/最新安定版、同一DBでのPHP変更、テーマ旧版→現行版、広告/画面回帰を検査する構成です。CI設定は合格証明ではありません。対象コミットの実際のActions結果を参照してください。
+通常の検査用GitHub Actionsはcontents:readのみで、PHP8.2〜8.5の構文検査、MySQL8.0によるWordPress6.6→固定版7.1.3/最新安定版、同一DBでのPHP変更、テーマ旧版→現行版、広告/画面回帰を検査する構成です。CI設定は合格証明ではありません。対象コミットの実際のActions結果を参照してください。
+
+Release作成専用ジョブだけにcontents:write/actions:readを限定しています。同一mainコミットの両CI成功・配布ZIPの固定ハッシュを確認して、指定した1.0.2/1.0.3だけを公開します。既存タグや公開済みReleaseは上書きしません。将来の版追加は許可リストのレビュー済み変更が必要です。
 
 検証対象の公式情報: [WordPressリリース](https://wordpress.org/download/releases/)、[WordPress要件](https://wordpress.org/about/requirements/)、[PHPサポート版](https://www.php.net/supported-versions.php)。確認時の安定版WordPressは7.1.3、サポート中PHPの枝は8.2/8.3/8.4/8.5でした。
 
