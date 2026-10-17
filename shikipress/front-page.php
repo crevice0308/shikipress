@@ -1,0 +1,25 @@
+<?php if (!defined('ABSPATH')) { exit; } get_header();
+$shiki_context = shiki_frontend_context();
+$shiki_season = $shiki_context['season'];
+$shiki_english = ['spring' => 'SPRING', 'summer' => 'SUMMER', 'autumn' => 'AUTUMN', 'winter' => 'WINTER'];
+$shiki_note = ['spring' => '花ひらく季節、暮らしにも新しい風を。', 'summer' => '光と緑に包まれて、涼やかな日々を。', 'autumn' => '深まる秋を、心地よく迎える。', 'winter' => 'ぬくもりを分けあう、冬のひととき。'];
+$shiki_count_query = shiki_public_posts(['posts_per_page' => 1, 'fields' => 'ids', 'no_found_rows' => false]);
+$shiki_count = (int) $shiki_count_query->found_posts;
+$shiki_featured = ($shiki_count >= 6 && function_exists('shiki_select_posts')) ? shiki_select_posts('featured', [], 3) : [];
+$shiki_excluded = wp_list_pluck($shiki_featured, 'ID');
+$shiki_latest = shiki_public_posts(['posts_per_page' => $shiki_count <= 5 ? 5 : 6, 'post__not_in' => $shiki_excluded, 'no_found_rows' => true]);
+?>
+<main id="main-content" tabindex="-1" data-modal-inert>
+    <section class="home-hero wrap" aria-labelledby="hero-title"><div class="hero-copy"><p class="hero-kicker"><span></span><?php echo esc_html(shiki_option('hero_kicker')); ?></p><h1 id="hero-title"><?php echo nl2br(esc_html(shiki_option('hero_title'))); ?></h1><p class="hero-description"><?php echo esc_html(shiki_option('hero_description')); ?></p><?php if ($shiki_count) { ?><a class="button button-primary" href="#<?php echo $shiki_featured ? 'season-feature' : 'latest-posts'; ?>"><?php echo esc_html($shiki_context['label']); ?>の暮らしを読む <?php echo shiki_icon('arrow'); ?></a><?php } else { ?><a class="text-link" href="#opening-note">はじまりのご挨拶 <?php echo shiki_icon('arrow'); ?></a><?php } ?><div class="hero-season"><span class="season-line"></span><span><?php echo esc_html($shiki_english[$shiki_season]); ?> LETTER</span><span class="hero-season-kanji"><?php echo esc_html($shiki_context['label']); ?></span></div></div><div class="hero-visual"><img class="hero-art" src="<?php echo esc_url(get_theme_file_uri('/assets/season-' . $shiki_season . '.svg')); ?>" width="1000" height="1100" alt="<?php echo esc_attr($shiki_context['label'] . 'の植物と花器を描いたオリジナルイラスト'); ?>" fetchpriority="high" decoding="async"><span class="hero-visual-caption">THE BEAUTY OF EVERYDAY LIFE</span><span class="hero-stamp" aria-hidden="true">季<br>節<br>の<br>し<br>お<br>り</span></div></section>
+    <div class="season-message wrap"><span class="eyebrow">THIS SEASON</span><p><?php echo esc_html($shiki_note[$shiki_season]); ?></p><span class="season-message-icon"><?php echo shiki_icon('leaf'); ?></span></div>
+    <?php if (!empty($shiki_context['event'])) { $shiki_event = $shiki_context['event']; $shiki_event_label = is_array($shiki_event) ? ($shiki_event['label'] ?? $shiki_event['name'] ?? '') : $shiki_event; if ($shiki_event_label) { ?><p class="event-note wrap"<?php $shiki_event_accent = is_array($shiki_event) ? sanitize_hex_color($shiki_event['accent'] ?? '') : ''; if ($shiki_event_accent) { echo ' style="--event-accent:' . esc_attr($shiki_event_accent) . '"'; } ?>><span>SEASONAL MOMENT</span> <?php echo esc_html($shiki_event_label); ?></p><?php } } ?>
+    <div class="home-sections wrap">
+        <?php if (!$shiki_count) { ?><section class="opening-note" id="opening-note"><p class="eyebrow">A NEW CHAPTER</p><h2>季節のしおりを、<br>一枚ずつ。</h2><p>ただいま、最初のお便りを準備しています。<br>暮らしに寄り添う小さなヒントを、ここからお届けしていきます。</p><?php shiki_page_links('opening-pages'); ?></section><?php } ?>
+        <?php if ($shiki_featured) { ?><section class="content-section" id="season-feature"><?php shiki_section_title('SEASONAL PICKS', $shiki_context['label'] . 'を楽しむ、暮らしのしおり', 'いまの季節に寄り添う、読みものを集めました。'); shiki_render_cards($shiki_featured); ?></section><?php } ?>
+        <?php if ($shiki_latest->posts) { ?><section class="content-section" id="latest-posts"><?php shiki_section_title('LATEST STORIES', '新しいしおり', '日々の暮らしに、小さな発見を。'); shiki_render_cards($shiki_latest->posts); if ($shiki_count > count($shiki_latest->posts) + count($shiki_featured)) { ?><div class="section-more"><a class="button button-outline" href="<?php echo esc_url(shiki_stories_url()); ?>">記事をもっと読む <?php echo shiki_icon('arrow'); ?></a></div><?php } ?></section><?php } ?>
+        <?php $shiki_popular = (shiki_option('show_popular') && function_exists('shiki_select_posts')) ? shiki_select_posts('popular', array_merge($shiki_excluded, wp_list_pluck($shiki_latest->posts, 'ID')), 3) : []; if ($shiki_popular) { ?><section class="content-section"><?php shiki_section_title('MOST READ', 'よく読まれているしおり'); shiki_render_cards($shiki_popular); ?></section><?php } ?>
+        <?php ob_start(); shiki_season_links(); $shiki_tiles = ob_get_clean(); if ($shiki_tiles) { ?><section class="content-section seasons-section"><?php shiki_section_title('FOUR SEASONS', '四季から、暮らしを探す'); echo $shiki_tiles; ?></section><?php } ?>
+        <?php if (shiki_public_pages()) { ?><section class="site-guide content-section"><div><p class="eyebrow">ABOUT THIS JOURNAL</p><h2>暮らしに寄り添う、<br>季節の道しるべ。</h2><p>このサイトについてのご案内はこちらから。</p></div><?php shiki_page_links(); ?></section><?php } ?>
+    </div>
+</main>
+<?php get_footer(); ?>

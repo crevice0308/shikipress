@@ -1,0 +1,30 @@
+/* Scoped, original adapters for optional front-end form/table plugins. */
+.entry-content .wpcf7{--shiki-form-error:#b42318;max-width:100%;min-width:0}
+.entry-content .wpcf7 form>label,.entry-content .wpcf7 form>p>label{display:block;margin-bottom:1.25em}
+.entry-content .wpcf7 .wpcf7-form-control-wrap{display:block;max-width:100%}
+.entry-content .wpcf7 input:not([type=checkbox]):not([type=radio]):not([type=submit]):not([type=hidden]),.entry-content .wpcf7 textarea,.entry-content .wpcf7 select{width:100%;max-width:100%;min-width:0;min-height:48px;font-size:1rem;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:2px;padding:12px}
+.entry-content .wpcf7 textarea{resize:vertical;line-height:1.9}
+.entry-content .wpcf7 fieldset{min-width:0;max-width:100%;border:1px solid var(--line);padding:10px 16px;margin:0 0 1.25em}
+.entry-content .wpcf7 legend{padding:0 6px}
+.entry-content .wpcf7 .wpcf7-list-item{margin:0 1em 0 0}
+.entry-content .wpcf7 .wpcf7-list-item label{display:inline-flex;align-items:center;gap:10px;min-height:44px}
+.entry-content .wpcf7 input[type=checkbox],.entry-content .wpcf7 input[type=radio]{width:18px;height:18px;flex:none;margin:0}
+.entry-content .wpcf7 input[type=submit]{display:inline-block;min-height:48px;padding:12px 24px;background:var(--accent);color:var(--surface);border:1px solid var(--accent);font-size:1rem;cursor:pointer}
+.entry-content .wpcf7 input[type=submit]:disabled{opacity:.55;cursor:default}
+.entry-content .wpcf7 .wpcf7-not-valid-tip{color:var(--shiki-form-error);font-size:1rem;margin-top:6px}
+.entry-content .wpcf7 input[aria-invalid=true],.entry-content .wpcf7 textarea[aria-invalid=true]{border-color:var(--shiki-form-error)}
+.entry-content .wpcf7 form .wpcf7-response-output{max-width:100%;margin:1.25em 0;padding:14px 18px;color:var(--ink);overflow-wrap:anywhere}
+.entry-content .wpcf7 form.invalid .wpcf7-response-output,.entry-content .wpcf7 form.failed .wpcf7-response-output,.entry-content .wpcf7 form.unaccepted .wpcf7-response-output{border-color:var(--shiki-form-error)}
+.entry-content .wpcf7 form.sent .wpcf7-response-output{border-color:var(--accent)}
+@media(prefers-color-scheme:dark){:root:not([data-theme=light]) .entry-content .wpcf7{--shiki-form-error:#ffb4ab}}
+:root[data-theme=dark] .entry-content .wpcf7{--shiki-form-error:#ffb4ab}
+.entry-content .tablepress{--text-color:var(--ink);--head-text-color:var(--ink);--head-bg-color:var(--accent-soft);--head-active-bg-color:var(--accent-soft);--odd-text-color:var(--ink);--odd-bg-color:var(--surface);--even-text-color:var(--ink);--even-bg-color:var(--paper);--hover-text-color:var(--ink);--hover-bg-color:var(--accent-soft);--border-color:var(--line)}
+.entry-content .dt-container{min-width:0;max-width:100%;color:var(--ink)}
+/* DataTables owns scrolling and synchronizes its separate header/body tables. */
+.entry-content .dt-scroll table.tablepress{display:table;max-width:none;overflow:visible}
+.entry-content .dt-container input,.entry-content .dt-container select{max-width:100%;min-height:44px;background:var(--surface);color:var(--ink);border:1px solid var(--line)}
+.entry-content .dt-container .dt-paging .dt-paging-button{min-width:44px;min-height:44px;color:var(--ink)!important}
+/* Keep Google's legal badge visible and usable above the fixed mobile tabs.
+   Its provider-owned challenge dialog keeps its own stacking and geometry. */
+.grecaptcha-badge{z-index:450!important}
+@media(max-width:767px){.grecaptcha-badge{bottom:calc(var(--tab-height,72px) + env(safe-area-inset-bottom,0px) + 14px)!important}}

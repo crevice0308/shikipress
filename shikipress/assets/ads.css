@@ -1,0 +1,9 @@
+.shiki-ad{display:block;max-width:100%;margin:2rem auto;padding:1rem;border:1px solid var(--line,#d7d3c9);background:var(--surface,#f7f5ef);color:var(--ink,#26332c);box-sizing:border-box;clear:both;overflow-wrap:anywhere}
+.shiki-ad__label{display:block;font-size:.75rem;line-height:1.6;letter-spacing:.08em;color:var(--muted,#555f57);margin-bottom:.6rem;text-align:center}
+.shiki-ad__body{min-height:var(--shiki-ad-height,250px);display:grid;align-content:center;justify-items:center;max-width:100%}
+.shiki-ad__body>ins{width:100%}.shiki-ad__body img{max-width:100%;height:auto}
+.shiki-ad__status{font-size:.9rem;text-align:center;line-height:1.7;padding:.5rem}
+.shiki-ad[data-state="device-excluded"]{display:none}
+.shiki-ad[data-state="delay"] .shiki-ad__body{background:linear-gradient(135deg,transparent,rgba(128,128,128,.08))}
+.shiki-ad[data-state="test"] .shiki-ad__body{border:1px dashed currentColor}
+@media(prefers-color-scheme:dark){.shiki-ad{background:var(--surface,#202922);color:var(--ink,#eeeae2)}.shiki-ad__label{color:var(--muted,#c7cdc8)}}
