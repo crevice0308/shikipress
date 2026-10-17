@@ -13,6 +13,8 @@ if (!current_user_can('update_themes') || !class_exists('ShikiPress_Updater')) {
     throw new RuntimeException('The administrator and installed ShikiPress updater must be loaded.');
 }
 $phase = $shiki_updater_phase ?? ($args[0] ?? 'security');
+// WP-CLI eval-file executes inside a method; helpers need this explicit binding.
+global $fixture_dir;
 $fixture_dir = defined('SHIKI_UPDATER_FIXTURE_DIR') ? SHIKI_UPDATER_FIXTURE_DIR : rtrim((string)getenv('SHIKI_CI_STATE'), '/') . '/updater-fixtures';
 if ($fixture_dir === '/updater-fixtures') {
     throw new RuntimeException('An explicit disposable fixture directory is required.');
