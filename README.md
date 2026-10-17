@@ -4,8 +4,10 @@
 
 ## インストール
 
+配布済みのインストール用ZIPは[最新の正式Release](https://github.com/crevice0308/shikipress/releases/latest)から取得できます。以下はソースから生成する場合の手順です。
+
 1. `python3 scripts/package.py dist` でインストール用 ZIP を生成します。
-2. WordPress 管理画面の「外観 → テーマ → 新しいテーマを追加 → テーマのアップロード」から `dist/shikipress-1.0.3.zip` を選びます。
+2. WordPress 管理画面の「外観 → テーマ → 新しいテーマを追加 → テーマのアップロード」から `dist/shikipress-1.0.4.zip` を選びます。
 3. 既存サイトへの適用前にデータベースと wp-content 全体をバックアップし、ステージングで確認してください。
 
 GitHub の「Download ZIP」は開発資料も含むソース一式です。そのまま WordPress にアップロードせず、上記のテーマ ZIP を使ってください。独自の自動更新サーバーはありません。
@@ -16,6 +18,8 @@ GitHub の「Download ZIP」は開発資料も含むソース一式です。そ�
 - 推奨 PHP とサーバー条件は [WordPress 公式要件](https://wordpress.org/about/requirements/) を確認してください。
 - [実行結果・未検証事項](docs/verification.md) を参照してください。CI の対象設定は合格結果や将来の互換性保証を意味しません。
 - 本番サイト、実機スマートフォン、利用者の広告/CMPアカウントを使った配信は確認していません。
+
+[代表的なプラグイン7種類の併用検査](docs/plugin-compatibility.md)も参照してください。テーマとプラグインで必要なWordPress/PHP版が異なる場合があります。
 
 ## 主な機能
 
@@ -43,7 +47,7 @@ GitHub の「Download ZIP」は開発資料も含むソース一式です。そ�
 
 - `npm ci --ignore-scripts && npx playwright install --with-deps chromium && npm run test:layout`: 外部広告へ接続しない画面回帰テスト
 
-[データ保全テスト](tests/upgrade/README.md)、[画面回帰テスト](tests/layout/README.md)、[検証記録](docs/verification.md) を参照してください。GitHub Actionsは読み取り専用権限で実行します。
+[データ保全テスト](tests/upgrade/README.md)、[画面回帰テスト](tests/layout/README.md)、[検証記録](docs/verification.md) を参照してください。通常のテストは読み取り専用権限で実行します。Release専用ジョブだけに書き込み権限を限定しています。
 
 ## ライセンス
 

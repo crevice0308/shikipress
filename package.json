@@ -1,1 +1,11 @@
-{"name":"shikipress-offline-layout-regression","private":true,"version":"1.0.0","scripts":{"test:layout":"node tests/layout/run-layout.cjs"},"devDependencies":{"playwright":"1.62.1"}}
+{
+  "name": "shikipress-offline-layout-regression",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "test:layout": "node tests/layout/run-layout.cjs && node tests/layout/plugin-ad-loaders.cjs"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
+}

@@ -83,10 +83,34 @@
       await loadScript(item.script, item.marker, (sharedLoaders || []).includes(absolute));
     }
   };
+  // Site Kit adds a host query parameter; CMPs may hold the URL in data-src.
+  // Inspect provider-owned tags without changing their attributes or consent state.
+  const adsenseTag = function (publisher) {
+    const matches = function (value) {
+      if (!value) return false;
+      try {
+        const url = new URL(value, window.location.href);
+        return url.origin === 'https://pagead2.googlesyndication.com' &&
+          url.pathname === '/pagead/js/adsbygoogle.js' && url.searchParams.get('client') === publisher;
+      } catch (err) { return false; }
+    };
+    const script = Array.from(document.scripts).find(function (node) {
+      return matches(node.getAttribute('src')) || matches(node.getAttribute('data-src'));
+    });
+    if (!script) return null;
+    const type = (script.getAttribute('type') || '').trim().toLowerCase();
+    const executable = !type || ['text/javascript', 'application/javascript', 'module'].includes(type);
+    return {script: script, pending: !matches(script.getAttribute('src')) || !executable};
+  };
   const adsenseLoader = function (publisher) {
     if (!/^ca-pub-[0-9]{16}$/.test(publisher || '')) return Promise.reject(new Error('publisher'));
     const src = 'https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=' + publisher;
     if (loaders.has(src)) return loaders.get(src);
+    const existing = adsenseTag(publisher);
+    if (existing) {
+      if (existing.pending) return Promise.reject(new Error('provider-consent-pending'));
+      return Promise.resolve(); // AdSense queues units while its async loader is pending.
+    }
     const source = document.createElement('script'); source.src = src; source.setAttribute('crossorigin', 'anonymous');
     const marker = document.createComment('shiki-adsense-loader'); document.head.appendChild(marker);
     return loadScript(source, marker, true);
@@ -114,6 +138,11 @@
       return;
     }
     if (!consentAllowed(payload)) { setState(node, 'consent-wait', '広告は同意状態の確認待ちです'); return; }
+    const provider = payload.service === 'adsense' ? adsenseTag(payload.publisher) : null;
+    if (provider && provider.pending) {
+      setState(node, 'consent-wait', '広告サービス側の同意処理を待っています');
+      return; // Leave retryable on the next consent callback or resize.
+    }
     node.dataset.started = 'true';
     productionStarted = true; consentedSlots.add(payload);
     const body = node.querySelector('.shiki-ad__body');
@@ -146,7 +175,8 @@
   const update = function () {
     payloads.forEach(function (payload, node) { mountSlot(node, payload); });
     const autoPayload = {vendors: [755], purposes: [1, 3, 4]};
-    if (cfg.auto && !autoStarted && consentAllowed(autoPayload)) {
+    const autoProvider = cfg.auto ? adsenseTag(cfg.publisher) : null;
+    if (cfg.auto && !autoStarted && consentAllowed(autoPayload) && !(autoProvider && autoProvider.pending)) {
       autoStarted = true; productionStarted = true; consentedSlots.add(autoPayload);
       adsenseLoader(cfg.publisher).catch(function () { document.dispatchEvent(new CustomEvent('shiki:ad-error', {detail: {reason: 'auto-loader'}})); });
     }

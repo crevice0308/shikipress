@@ -44,6 +44,23 @@ add_filter('wpseo_canonical', static function ($url) {
     if (is_singular() && (has_shortcode((string) get_post_field('post_content', get_queried_object_id()), 'shiki_sitemap') || has_shortcode((string) get_post_field('post_content', get_queried_object_id()), 'shiki_html_sitemap'))) { return shiki_seo_canonical(); }
     return $url;
 }, 20);
+// Reader-sitemap slices are distinct URLs. Keep Yoast's presentation and schema
+// context aligned with the theme canonical instead of changing only the link tag.
+add_filter('wpseo_frontend_presentation', static function ($presentation, $context) {
+    if (is_404() || is_preview() || is_feed() || !is_singular()) { return $presentation; }
+    $content = (string) get_post_field('post_content', get_queried_object_id());
+    if (!has_shortcode($content, 'shiki_sitemap') && !has_shortcode($content, 'shiki_html_sitemap')) { return $presentation; }
+    if (absint($_GET['shiki_map_posts'] ?? 0) < 2 && absint($_GET['shiki_map_pages'] ?? 0) < 2) { return $presentation; }
+    $url = shiki_seo_canonical();
+    if (!$url) { return $presentation; }
+    $presentation->canonical = $url;
+    $presentation->open_graph_url = $url;
+    $presentation->permalink = $url;
+    $context->canonical = $url;
+    $context->permalink = $url;
+    $context->main_schema_id = $url;
+    return $presentation;
+}, 20, 2);
 add_filter('wpseo_title', static function ($title) {
     if (!is_404() && get_query_var('shiki_stories')) {
         $page = max(1, (int) get_query_var('paged'));

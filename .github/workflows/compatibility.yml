@@ -24,8 +24,12 @@ jobs:
           find shikipress -type f -name '*.php' -print0 | xargs -0 -n1 php -l
           python3 tests/upgrade/verify-package.py --build shikipress "$RUNNER_TEMP/shikipress.zip"
           bash -n tests/upgrade/run-ci.sh
+          bash -n tests/plugins/run-ci.sh
+          find tests/plugins -type f -name '*.php' -print0 | xargs -0 -n1 php -l
+          python3 -m py_compile tests/plugins/check-http.py
   content-retention:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -79,6 +83,15 @@ jobs:
           tools: wp-cli
       - name: Verify every retained fixture after PHP upgrade
         run: bash tests/upgrade/run-ci.sh assert-php
+      - name: Official plugin activation, retention, and local rendering smoke
+        run: bash tests/plugins/run-ci.sh
+      - name: Preserve versioned plugin smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-smoke-wp-${{ matrix.target_wp }}-php-${{ matrix.next_php }}
+          path: ${{ runner.temp }}/shikipress-retention-ci/reports/plugins
+          if-no-files-found: warn
       - name: Print versioned retention evidence
         if: always()
         run: |

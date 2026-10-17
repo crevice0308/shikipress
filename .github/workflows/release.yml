@@ -61,8 +61,10 @@ jobs:
           RELEASES = (
               {'version': '1.0.2', 'commit': BASELINE, 'prerelease': True,
                'sha256': '0fc2e436a7907ba482d59e3934b60f0cc354667286b1089a3d2dc26d11717704', 'files': 44},
-              {'version': '1.0.3', 'commit': None, 'prerelease': False,
+              {'version': '1.0.3', 'commit': 'a671266dc0e16b71daaf88e7f32e833842da27fb', 'prerelease': False,
                'sha256': 'e83da81eb6330a27be5ffce9c9809d19afc455b5745152c77965ca017b0d23b7', 'files': 44},
+              {'version': '1.0.4', 'commit': None, 'prerelease': False,
+               'sha256': 'fbe53ab06290577c72afc17b9dc3da76fb2fe9cb693e35ba88238f78e88d1386', 'files': 44},
           )
           PREFIX = f'repos/{REPOSITORY}/'
           BLOBS = {}
@@ -292,10 +294,11 @@ jobs:
                             'Known issues retained for historical reproducibility include long mobile site-title overflow, '
                             'narrow-screen fixed-width advertising layout, and synchronous no-fill handling. Prefer 1.0.3 for new installs.'
                             if spec['prerelease'] else
-                            'Stable 1.0.3 release. Both full CI workflows passed on the exact tagged source commit. '
+                            f'Stable {spec["version"]} release. Both full CI workflows passed on the exact tagged source commit. '
                             'Coverage includes native PHP syntax checks, disposable MySQL-backed WordPress upgrade/retention fixtures, '
                             'and offline Chromium layout/ad-state regressions. This does not establish compatibility with all '
                             'plugins, real advertising providers, real-device browsers, hosting environments, or future WordPress/PHP releases. '
+                            'Version 1.0.4 fixes Site Kit AdSense loader duplication and Yoast reader-sitemap pagination metadata. '
                             'Fixed-width ad tags require their minimum width to be configured, and reserved ad height must match '
                             'the expected creative height; unknown fixed widths and oversized creatives are not automatically corrected.')
                   body = (f'{detail}\n\nSource commit: {source}\n\nInstall the shikipress-{spec["version"]}.zip asset '
@@ -305,6 +308,8 @@ jobs:
                           f'https://github.com/{REPOSITORY}/blob/{main}/docs/verification.md\n'
                           'Advertising configuration: '
                           f'https://github.com/{REPOSITORY}/blob/{main}/docs/ads-guide.md\n'
+                          'Plugin coverage and exclusions: '
+                          f'https://github.com/{REPOSITORY}/blob/{main}/docs/plugin-compatibility.md\n'
                           '\nValidation commit: ' + main + '\n'
                           + '\n'.join(f'- {run["url"]} (attempt {run["attempt"]})' for run in evidence)
                           + '\n\n' + marker(spec, source))
@@ -366,7 +371,7 @@ jobs:
               for item in prepared:
                   publish(item, sha, evidence)
               latest = api('releases/latest')
-              require(latest['tag_name'] == 'v1.0.3' and not latest['draft'] and not latest['prerelease'],
+              require(latest['tag_name'] == 'v1.0.4' and not latest['draft'] and not latest['prerelease'],
                       'Stable/latest status differs; review required (nothing will be overwritten)')
               print('Both bounded releases and stable/latest designation verified.')
           
