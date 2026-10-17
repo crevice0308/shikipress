@@ -1,0 +1,17 @@
+{
+  "name": "shikipress-wordpress-layout-integration",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "test": "node run-wordpress-layout.mjs"
+  },
+  "devDependencies": {
+    "@wp-playground/cli": "3.1.58",
+    "playwright": "1.62.1"
+  },
+  "engines": {
+    "node": ">=24.18.0",
+    "npm": ">=11.16.0"
+  }
+}

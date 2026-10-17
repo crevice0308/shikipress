@@ -94,6 +94,14 @@
   const mountSlot = async function (node, payload) {
     if (node.dataset.started === 'true') return;
     if (!deviceAllowed(payload)) { setState(node, 'device-excluded'); return; }
+    // Check a declared fixed creative width before any provider code or request.
+    // Never clip, resize, move, or remove a provider iframe after it has started.
+    const minWidth = Math.max(0, Number(payload.minWidth) || 0);
+    const availableWidth = node.querySelector('.shiki-ad__body').getBoundingClientRect().width;
+    if (minWidth > 0 && availableWidth + 0.5 < minWidth) {
+      setState(node, 'size-excluded', '広告枠の幅が不足しているため配信を保留しています');
+      return;
+    }
     if (payload.mode !== 'production' || !cfg.live) {
       node.dataset.started = 'true';
       const mode = payload.dummy || 'ready';
@@ -118,14 +126,17 @@
         ad.dataset.adFormat = 'auto'; ad.dataset.fullWidthResponsive = 'true';
         body.replaceChildren(ad);
         await adsenseLoader(payload.publisher);
-        (window.adsbygoogle = window.adsbygoogle || []).push({});
+        // Observe before push and inspect immediately: a cached loader may finish synchronously.
         // No-fill detection reports state only; never hides or moves a provider iframe.
-        new MutationObserver(function () {
+        const updateFillState = function () {
           if (ad.dataset.adStatus === 'unfilled') setState(node, 'no-fill');
           else if (ad.dataset.adStatus === 'filled') setState(node, 'ready');
-        }).observe(ad, {attributes: true, attributeFilter: ['data-ad-status']});
+        };
+        new MutationObserver(updateFillState).observe(ad, {attributes: true, attributeFilter: ['data-ad-status']});
+        (window.adsbygoogle = window.adsbygoogle || []).push({});
+        updateFillState();
       } else await mountCode(body, payload.code || '', payload.sharedLoaders || []);
-      setState(node, 'ready');
+      if (node.dataset.state === 'loading') setState(node, 'ready');
     } catch (err) {
       setState(node, 'failure', '広告を読み込めませんでした');
       node.dispatchEvent(new CustomEvent('shiki:ad-error', {detail: {reason: String(err.message || 'unknown')}}));

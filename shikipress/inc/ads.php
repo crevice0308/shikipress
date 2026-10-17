@@ -102,6 +102,7 @@ add_filter('shiki_sanitize_settings', function ($out, $input, $section) {
             'exclude_ids' => shiki_ads_ids($row['exclude_ids'] ?? []), 'exclude_categories' => shiki_ads_ids($row['exclude_categories'] ?? []),
             'interval' => max(1, min(20, absint($row['interval'] ?? 3))), 'limit' => max(1, min(6, absint($row['limit'] ?? 1))),
             'height' => max(80, min(600, absint($row['height'] ?? 250))),
+            'min_width' => max(0, min(2000, absint($row['min_width'] ?? 0))),
             'dummy' => shiki_ads_choice($row['dummy'] ?? '', array_fill_keys(['ready','delay','no-fill','failure'], true), 'ready'),
             'publisher' => $publisher, 'ad_slot' => $ad_slot, 'code' => $code,
             'trusted' => $can_code ? !empty($row['trusted']) : !empty($old['trusted']),
@@ -138,7 +139,7 @@ function shiki_ads_render_slot(array $slot, bool $count = true): string {
     if ($count && (($counts[$id] ?? 0) >= ($slot['limit'] ?? 1) || $total >= shiki_option('ads_limit', 5))) { return ''; }
     if ($count) { $counts[$id] = ($counts[$id] ?? 0) + 1; $total++; }
     $production = 'production' === $mode && 'production' === ($slot['state'] ?? '') && shiki_ads_environment_allowed();
-    $payload = ['service' => $slot['service'] ?? 'generic', 'device' => $slot['device'] ?? 'all', 'mode' => $production ? 'production' : 'test', 'dummy' => $slot['dummy'] ?? 'ready'];
+    $payload = ['service' => $slot['service'] ?? 'generic', 'device' => $slot['device'] ?? 'all', 'mode' => $production ? 'production' : 'test', 'dummy' => $slot['dummy'] ?? 'ready', 'minWidth' => max(0, min(2000, absint($slot['min_width'] ?? 0)))];
     if ($production) {
         $payload += ['publisher' => ($slot['publisher'] ?? '') ?: shiki_option('ads_publisher', ''), 'adSlot' => $slot['ad_slot'] ?? '', 'vendors' => $slot['vendors'] ?? [], 'purposes' => $slot['purposes'] ?? [1,3,4], 'sharedLoaders' => $slot['shared_loaders'] ?? []];
         if ('adsense' !== $payload['service']) {
@@ -282,6 +283,7 @@ add_action('shiki_admin_tab_ads', function () {
         shiki_ads_admin_field('挿入間隔（段落/H2数）', $prefix . '[interval]', $slot['interval'] ?? 3, 'number');
         shiki_ads_admin_field('同一ページ内の枠上限', $prefix . '[limit]', $slot['limit'] ?? 1, 'number');
         shiki_ads_admin_field('確保する高さ（80〜600px）', $prefix . '[height]', $slot['height'] ?? 250, 'number');
+        shiki_ads_admin_field('広告の最小幅（0＝レスポンシブ、固定幅タグは素材の幅px）', $prefix . '[min_width]', $slot['min_width'] ?? 0, 'number');
         shiki_ads_admin_field('除外ページ/投稿ID（カンマ区切り）', $prefix . '[exclude_ids]', $slot['exclude_ids'] ?? []);
         shiki_ads_admin_field('除外カテゴリーID（カンマ区切り）', $prefix . '[exclude_categories]', $slot['exclude_categories'] ?? []);
         shiki_ads_admin_field('AdSense枠別パブリッシャーID（省略可）', $prefix . '[publisher]', $slot['publisher'] ?? '');

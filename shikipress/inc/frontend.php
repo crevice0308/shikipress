@@ -79,7 +79,19 @@ function shiki_post_season($post_id) {
     return shiki_frontend_context()['season'];
 }
 
-function shiki_card($item, $heading_level = 3) {
+/** Match the card grid so browsers can select an appropriately sized local image. */
+function shiki_card_image_sizes(int $columns = 3): string {
+    if (1 === $columns) {
+        return '(max-width: 360px) calc(100vw - 32px), (max-width: 767px) calc(100vw - 40px), 580px';
+    }
+    $mobile = '(max-width: 360px) calc((100vw - 44px) / 2), (max-width: 767px) calc((100vw - 55px) / 2), (max-width: 900px) calc((100vw - 96px) / 2), ';
+    if (2 === $columns) {
+        return $mobile . '(max-width: 1100px) calc((100vw - 96px) / 2), (max-width: 1352px) calc((100vw - 142px) / 2), 605px';
+    }
+    return $mobile . '(max-width: 1100px) calc((100vw - 120px) / 3), (max-width: 1352px) calc((100vw - 172px) / 3), 394px';
+}
+
+function shiki_card($item, $heading_level = 3, $columns = 3) {
     $item = get_post($item);
     if (!$item || $item->post_status !== 'publish' || $item->post_password !== '' || get_post_meta($item->ID, '_shiki_exclude', true)) { return; }
     if (function_exists('shiki_seo_is_public_post') && !shiki_seo_is_public_post($item)) { return; }
@@ -92,7 +104,7 @@ function shiki_card($item, $heading_level = 3) {
     <article class="post-card season-<?php echo esc_attr($season); ?>">
         <a class="card-image" href="<?php echo esc_url(get_permalink($item)); ?>" tabindex="-1" aria-hidden="true">
             <?php if (has_post_thumbnail($item)) {
-                echo get_the_post_thumbnail($item, 'shiki-card', ['loading' => 'lazy', 'alt' => '']);
+                echo get_the_post_thumbnail($item, 'shiki-card', ['loading' => 'lazy', 'decoding' => 'async', 'sizes' => shiki_card_image_sizes((int) $columns), 'alt' => '']);
             } else { ?>
                 <img src="<?php echo esc_url(get_theme_file_uri('/assets/season-' . $season . '.svg')); ?>" alt="" width="760" height="520" loading="lazy" decoding="async">
             <?php } ?>
@@ -110,7 +122,7 @@ function shiki_card($item, $heading_level = 3) {
 function shiki_render_cards($posts) {
     if (!$posts) { return; }
     echo '<div class="post-grid count-' . esc_attr(min(3, count($posts))) . '">';
-    foreach ($posts as $item) { shiki_card($item); }
+    foreach ($posts as $item) { shiki_card($item, 3, min(3, count($posts))); }
     echo '</div>';
 }
 

@@ -1,0 +1,88 @@
+name: WordPress and PHP compatibility
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  syntax-and-package:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.2', '8.3', '8.4', '8.5']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+      - name: PHP syntax and package consistency
+        run: |
+          find shikipress -type f -name '*.php' -print0 | xargs -0 -n1 php -l
+          python3 tests/upgrade/verify-package.py --build shikipress "$RUNNER_TEMP/shikipress.zip"
+          bash -n tests/upgrade/run-ci.sh
+  content-retention:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - php: '8.2'
+            next_php: '8.5'
+            target_wp: '7.1.3'
+          - php: '8.3'
+            next_php: '8.4'
+            target_wp: latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      SHIKI_DB_PASS: root
+      SHIKI_WP_VERSION: '6.6'
+      SHIKI_WP_TARGET: ${{ matrix.target_wp }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: mysqli, gd, mbstring, zip
+          coverage: none
+          tools: wp-cli
+      - name: Ensure official MySQL-compatible client is available
+        run: |
+          if ! command -v mysql >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y default-mysql-client
+          fi
+      - name: Baseline, theme reinstall, real release upgrade, WordPress upgrade
+        run: bash tests/upgrade/run-ci.sh full
+      - name: Switch PHP while keeping the exact same database and media files
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.next_php }}
+          extensions: mysqli, gd, mbstring, zip
+          coverage: none
+          tools: wp-cli
+      - name: Verify every retained fixture after PHP upgrade
+        run: bash tests/upgrade/run-ci.sh assert-php
+      - name: Print versioned retention evidence
+        if: always()
+        run: |
+          find "$RUNNER_TEMP/shikipress-retention-ci/reports" -name '*.json' -type f -print -exec cat {} \; || true
+          if test -f "$RUNNER_TEMP/shikipress-retention-ci/wordpress/wp-content/debug.log"; then
+            cat "$RUNNER_TEMP/shikipress-retention-ci/wordpress/wp-content/debug.log"
+          fi

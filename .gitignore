@@ -1,0 +1,29 @@
+# Private/disposable runtime state
+.env
+.env.*
+!.env.example
+wp-config.php
+credentials.json
+*.sql
+*.sqlite
+*.sqlite3
+*.pem
+*.key
+*.phar
+dev-state/
+.runtime/
+node_modules/
+vendor/
+__pycache__/
+*.pyc
+# Generated reports and archives
+tests/results/
+screenshots/
+artifacts/
+dist/
+*.zip
+SHA256SUMS.txt
+tests/**/results/
+tests/**/screenshots/
+tests/wordpress-layout/wp-theme-*/
+tests/wordpress-layout/.playground/

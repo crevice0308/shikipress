@@ -35,3 +35,7 @@ body.season-spring,.season-spring{--accent:#9b4562;--accent-soft:#f2e3e7;--accen
 .event-note{border-left:4px solid var(--event-accent,var(--accent));padding:8px 16px;margin-top:16px}.additional-pages{margin-top:17px}.additional-pages summary{cursor:pointer;min-height:48px;padding:10px 0;font-size:14px;color:var(--accent)}.additional-pages .page-links{margin-top:8px}.page-link-groups{min-width:0}.entry-content table{display:block;overflow-x:auto;max-width:100%}.entry-content .wp-block-table table,.entry-content .table-scroll>table{display:table}
 @media(max-width:767px){.brand-name small,.hero-visual-caption{font-size:10px}}
 .footer-role-links a,.footer-menu a{min-height:44px;display:inline-flex;align-items:center}.shiki-html-sitemap a{min-height:44px}
+
+/* Allow user-supplied names to wrap while keeping navigation controls usable. */
+.header-main .brand{flex-shrink:1;min-width:0}.brand-link,.brand-name{min-width:0}.brand-mark,.header-actions{flex-shrink:0}
+@media(max-width:767px){.header-actions .icon-button{width:44px;min-height:44px}.search-field-wrap input{font-size:16px}}
