@@ -43,7 +43,9 @@ if (str_starts_with($phase, 'seed')) {
     update_option('blogname', 'ShikiPress update retention');
     update_option('blogdescription', 'Synthetic disposable integration fixtures');
     update_option('timezone_string', 'Asia/Tokyo');
-    update_option('permalink_structure', '/%postname%/');
+    // The option alone leaves this request's WP_Rewrite cache stale.
+    // Use core's setter before any fixture URLs are snapshotted.
+    $GLOBALS['wp_rewrite']->set_permalink_structure('/%postname%/');
     $settings = get_option('shikipress_settings', []);
     $settings['season_mode']='fixed'; $settings['season_fixed']='summer';
     $settings['classification_mode']='manual'; $settings['slug_mode']='manual';
@@ -105,5 +107,17 @@ $checks['stored_theme_version']=get_option('shikipress_version')===SHIKI_VERSION
 $checks['media_file_exists']=!in_array(null,array_column($actual['media'],'sha256'),true);
 $checks['twenty_published_articles']=count(array_filter($fixture['posts'],static fn($id)=>get_post_status($id)==='publish'&&get_post_type($id)==='post'&&str_starts_with(get_post_field('post_name',$id),'ci-retain-')))===20;
 $report=['phase'=>$phase,'wordpress'=>get_bloginfo('version'),'php'=>PHP_VERSION,'database_driver'=>get_class($GLOBALS['wpdb']),'theme'=>SHIKI_VERSION,'fixture_posts'=>count($fixture['posts']),'checks'=>$checks,'pass'=>!in_array(false,$checks,true)];
+// Output only synthetic fixture IDs/types and changed URLs, never post bodies or credentials.
+if (!$checks['urls']) {
+    $report['url_mismatches'] = [];
+    foreach ($fixture['posts'] as $id) {
+        $before = $expected['urls'][$id] ?? null;
+        $after = $actual['urls'][$id] ?? null;
+        if ($before !== $after) {
+            $report['url_mismatches'][] = ['id'=>$id,'type'=>get_post_type($id),'status'=>get_post_status($id),'before'=>$before,'after'=>$after];
+        }
+    }
+    $report['rewrite_state'] = ['stored_structure'=>get_option('permalink_structure'),'runtime_structure'=>$GLOBALS['wp_rewrite']->permalink_structure,'runtime_trailing_slash'=>$GLOBALS['wp_rewrite']->use_trailing_slashes];
+}
 echo wp_json_encode($report,JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE).PHP_EOL;
 if(!$report['pass']){ $diff=[]; foreach($checks as $key=>$ok){if(!$ok&&isset($expected[$key])){$diff[$key]=['expected'=>$expected[$key],'actual'=>$actual[$key]];}} file_put_contents(ABSPATH.'ci-retention-diff.json',wp_json_encode($diff,JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE)); throw new RuntimeException('Retention mismatch: '.implode(', ',array_keys(array_filter($checks,static fn($ok)=>!$ok))));}
