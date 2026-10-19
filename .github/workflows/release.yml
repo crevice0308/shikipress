@@ -38,7 +38,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PYTHON'
-          """Bounded release publisher. This file is embedded verbatim in release.yml.
+          """Version-driven stable release publisher. This file is embedded verbatim in release.yml.
           Only this reviewed code executes; theme blobs and all CI results remain data.
           """
           import base64
@@ -58,6 +58,8 @@ jobs:
               'compatibility.yml': 'WordPress and PHP compatibility',
               'browser-regression.yml': 'Offline browser regression',
           }
+          # Historical package pins are retained for offline regression only.
+          # The publisher never writes these already-public releases.
           RELEASES = (
               {'version': '1.0.2', 'commit': BASELINE, 'prerelease': True,
                'sha256': '0fc2e436a7907ba482d59e3934b60f0cc354667286b1089a3d2dc26d11717704', 'files': 44},
@@ -69,11 +71,12 @@ jobs:
                'sha256': 'a300419c39f6bf132a3b2bb6b74b6b57f7577668586bc62eb2a9c5a38b7584b9', 'files': 45,
                # Reviewed compatibility.yml target, never inferred from a moving latest version.
                'update': {'requires': '6.6', 'requires_php': '8.2', 'tested': '7.1.3'}},
-              {'version': '1.1.1', 'commit': None, 'prerelease': False,
+              {'version': '1.1.1', 'commit': '5391872439380cd8e9c73bfd60d9f015fd303436', 'prerelease': False,
                'sha256': 'c2cf1575d534494062723e49e2a2d666f96ba10bce02b0ef68d73d57d3668883', 'files': 45,
                # Reviewed compatibility.yml target, never inferred from a moving latest version.
                'update': {'requires': '6.6', 'requires_php': '8.2', 'tested': '7.1.3'}},
           )
+          TESTED_WORDPRESS = '7.1.3'
           PREFIX = f'repos/{REPOSITORY}/'
           BLOBS = {}
           
@@ -207,10 +210,10 @@ jobs:
               return (json.dumps(metadata, indent=2) + '\n').encode('utf-8')
           
           
-          def package(files, spec):
+          def package(files, spec, derive=False):
               """Byte-identical settings to the reviewed scripts/package.py, without executing it."""
-              require(isinstance(spec['files'], int) and spec['files'] > 0
-                      and bool(re.fullmatch('[0-9a-f]{64}', spec['sha256'])), 'Reviewed package pins are incomplete')
+              require(isinstance(spec['files'], int) and 0 < spec['files'] <= 1500
+                      and (derive or bool(re.fullmatch('[0-9a-f]{64}', spec['sha256']))), 'Reviewed package pins are incomplete')
               require(len(files) == spec['files'], 'Theme file count mismatch')
               for name, data in files.items():
                   parts = PurePosixPath(name).parts
@@ -240,6 +243,9 @@ jobs:
               with zipfile.ZipFile(io.BytesIO(data)) as archive:
                   require(archive.testzip() is None and set(archive.namelist()) == set(files), 'ZIP verification failed')
                   require(all(archive.read(name) == value for name, value in files.items()), 'ZIP/source mismatch')
+              require(len(data) <= 10485760 and sum(map(len, files.values())) <= 31457280, 'Package size limit exceeded')
+              if derive:
+                  spec['sha256'] = hashlib.sha256(data).hexdigest()
               require(hashlib.sha256(data).hexdigest() == spec['sha256'], 'Pinned package checksum mismatch')
               filename = f'shikipress-{spec["version"]}.zip'
               assets = {filename: data, 'SHA256SUMS.txt': f'{spec["sha256"]}  {filename}\n'.encode()}
@@ -248,6 +254,37 @@ jobs:
               return assets
           
           
+          def current_spec(files):
+              """Stable version bumps on exact green main are the release intent."""
+              header = files.get('shikipress/style.css', b'').decode('utf-8')
+              values = {}
+              for key, field in (('version', 'Version'), ('requires', 'Requires at least'), ('requires_php', 'Requires PHP')):
+                  matches = re.findall(r'^' + re.escape(field) + r':[ \t]*([^\r\n]*)', header, re.M)
+                  require(len(matches) == 1, f'Missing or duplicate {field} header')
+                  values[key] = matches[0].strip()
+              require(bool(re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', values['version'])),
+                      'Only canonical stable versions can be published')
+              require(values['requires'] == '6.6' and values['requires_php'] == '8.2',
+                      'Changed platform requirements need a release-policy review')
+              spec = {'version': values['version'], 'commit': None, 'prerelease': False,
+                      'sha256': '', 'files': len(files),
+                      'update': {'requires': values['requires'], 'requires_php': values['requires_php'], 'tested': TESTED_WORDPRESS}}
+              package(files, spec, derive=True)
+              return spec
+
+
+          def stable_gate(spec):
+              """Never publish an older version or silently change latest on reruns."""
+              latest = api('releases/latest')
+              tag = latest.get('tag_name', '')
+              require(not latest.get('draft') and not latest.get('prerelease')
+                      and bool(re.fullmatch(r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', tag)),
+                      'Unexpected latest stable release')
+              version = lambda value: tuple(map(int, value.split('.')))
+              require(version(spec['version']) >= version(tag[1:]), 'Stable version downgrade refused')
+              return tag
+
+
           def tag_commit(tag):
               ref = api(f'git/ref/tags/{tag}', missing=True)
               if ref is None:
@@ -325,6 +362,7 @@ jobs:
                   print(f'{tag} already published and verified; leaving it unchanged.')
                   return
               current_main(main)
+              stable_gate(spec)
               require(ci_gate(main) == evidence, 'CI gate changed before publication')
               observed = find_release(tag)
               require((observed or {}).get('id') == (release or {}).get('id'),
@@ -350,11 +388,15 @@ jobs:
                   if 'update' in spec:
                       detail += (' Version 1.1.0 adds the native WordPress admin updater for stable ShikiPress releases on single-site installations. '
                                  'Install this ZIP manually once to bootstrap updates from older versions. '
-                                 'Updates are manual by default; the updater does not enable automatic installation. '
+                                 'New installations keep manual updates by default until an administrator enables background installation. '
                                  'An existing administrator choice to enable WordPress theme auto-updates is honored. '
                                  'Multisite keeps manual ZIP updates. Checks run only when ShikiPress is the active theme or the active child theme uses ShikiPress as its parent. '
                                  'Update checks contact GitHub, which receives the server IP address; no site URL, email, or license key is sent. '
                                  'shikipress-update.json records the verified ZIP version, requirements, byte size, and SHA-256 digest.')
+                  if tuple(map(int, spec['version'].split('.'))) >= (1, 1, 2):
+                      detail += (' This release supports administrator-controlled WordPress background installation through the native per-theme auto-update toggle. '
+                                 'The ShikiPress dashboard links to that toggle; initial installation never changes the existing preference. '
+                                 'New stable version bumps on main publish automatically only after both required CI workflows pass for that exact commit.')
                   if spec['version'] == '1.1.1':
                       detail += (' Version 1.1.1 opens theme update details as a normal GitHub release link instead of a blocked iframe in WordPress admin. '
                                  'Version 1.1.0 already supports update detection and installation; this patch repairs its details display.')
@@ -394,6 +436,7 @@ jobs:
               verify_release(release, spec, source, assets, True)
               current_main(main)
               require(ci_gate(main) == evidence and tag_commit(tag) == source, 'Final release gate changed')
+              stable_gate(spec)
               # Publish only after all verified assets exist; compatible with GitHub immutable releases.
               published = api(f'releases/{release["id"]}', 'PATCH',
                               {'draft': False, 'prerelease': spec['prerelease'],
@@ -423,16 +466,18 @@ jobs:
               if evidence is None:
                   print('No release changes. The next successful required CI completion triggers another check.')
                   return
-              # Verify every package and all existing release state before the first mutation.
-              prepared = [prepare(spec, sha) for spec in RELEASES]
-              # A new stable source must itself match the bounded package, even if an older release exists.
-              package(theme_at(sha), RELEASES[-1])
-              for item in prepared:
-                  publish(item, sha, evidence)
+              # Derive metadata only from the exact trusted, green main source.
+              files = theme_at(sha)
+              spec = current_spec(files)
+              stable_gate(spec)
+              # An unchanged version must still match its published bytes exactly.
+              # Changed bytes without a version bump fail; no tag or asset is replaced.
+              item = prepare(spec, sha)
+              publish(item, sha, evidence)
               latest = api('releases/latest')
-              require(latest['tag_name'] == 'v1.1.1' and not latest['draft'] and not latest['prerelease'],
+              require(latest['tag_name'] == f'v{spec["version"]}' and not latest['draft'] and not latest['prerelease'],
                       'Stable/latest status differs; review required (nothing will be overwritten)')
-              print('All bounded releases and stable/latest designation verified.')
+              print('Current stable release and latest designation verified.')
           
           
           if __name__ == '__main__':

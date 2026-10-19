@@ -4,7 +4,7 @@
  *
  * Loaded by the active ShikiPress parent (including when a child theme is active).
  * Inactive themes cannot run their own updater. No token, telemetry, custom
- * installer, or changes to WordPress's automatic-update preferences are used.
+ * installer, or automatic changes to WordPress's update preferences are used.
  */
 defined( 'ABSPATH' ) || exit;
 
@@ -78,6 +78,27 @@ final class ShikiPress_Updater {
             $themes[ $key ]['update'] = $html->get_updated_html();
         }
         return $themes;
+    }
+
+    /** Use core's nonce/capability-protected toggle and its one saved preference. */
+    public static function admin_updates() {
+        if ( is_multisite() || 'shikipress' !== get_template() ||
+            ! current_user_can( 'update_themes' ) || ! current_user_can( 'switch_themes' ) ||
+            self::URI !== wp_get_theme( 'shikipress' )->get( 'UpdateURI' ) ) {
+            return;
+        }
+        $enabled = in_array( 'shikipress', (array) get_site_option( 'auto_update_themes', array() ), true );
+        echo '<div class="shiki-admin-card"><h2>' . esc_html__( 'テーマの自動更新', 'shikipress' ) . '</h2>';
+        echo '<p>' . esc_html__( '公式GitHubの正式版をWordPressのバックグラウンド処理でインストールします。投稿・メディア・設定は保持し、親テーマ内の直接編集は上書きされます。事前のバックアップと子テーマの利用を推奨します。', 'shikipress' ) . '</p>';
+        if ( wp_is_auto_update_enabled_for_type( 'theme' ) ) {
+            $action = $enabled ? 'disable-auto-update' : 'enable-auto-update';
+            $url = wp_nonce_url( add_query_arg( array( 'action' => $action, 'stylesheet' => 'shikipress' ), admin_url( 'themes.php' ) ), 'updates' );
+            echo '<p>' . esc_html__( 'WordPressの保存設定：', 'shikipress' ) . ' <strong>' . esc_html( $enabled ? __( '有効', 'shikipress' ) : __( '無効', 'shikipress' ) ) . '</strong></p>';
+            echo '<p><a class="button" href="' . esc_url( $url ) . '">' . esc_html( $enabled ? __( '自動更新を無効にする', 'shikipress' ) : __( '自動更新を有効にする', 'shikipress' ) ) . '</a></p>';
+        } else {
+            echo '<p>' . esc_html__( 'この環境ではWordPressの自動更新が無効です。ホスティング設定・管理ポリシーを確認してください。', 'shikipress' ) . '</p>';
+        }
+        echo '<p>' . esc_html__( '実行にはWP-Cronまたはサーバー側の定期実行と、テーマを書き換えられる権限が必要です。公開直後の即時更新ではなく、WordPressの次回確認後に実行されます。ホスティングやプラグインの更新ポリシーが優先される場合があります。', 'shikipress' ) . '</p></div>';
     }
 
     /** Remove this provider's stale offer before its code becomes inactive. */
@@ -537,3 +558,5 @@ add_filter( 'update_themes_github.com', array( 'ShikiPress_Updater', 'filter_upd
 add_filter( 'upgrader_pre_download', array( 'ShikiPress_Updater', 'pre_download' ), 10, 4 );
 add_action( 'switch_theme', array( 'ShikiPress_Updater', 'switched_theme' ), 10, 2 );
 add_filter( 'wp_prepare_themes_for_js', array( 'ShikiPress_Updater', 'prepare_themes' ) );
+
+add_action( 'shiki_admin_tab_dashboard', array( 'ShikiPress_Updater', 'admin_updates' ) );

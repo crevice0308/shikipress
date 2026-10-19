@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import subprocess
 import textwrap
+import tempfile
 import unittest
 from unittest import mock
 import zipfile
@@ -80,7 +81,8 @@ class PublisherTests(unittest.TestCase):
             'compatibility.yml': 'WordPress and PHP compatibility',
             'browser-regression.yml': 'Offline browser regression',
         })
-        self.assertIn("latest['tag_name'] == 'v1.1.1'", CODE)
+        self.assertIn("current_spec(files)", CODE)
+        self.assertNotIn("for spec in RELEASES", CODE)
 
     def test_metadata_comes_from_the_exact_installable_zip(self):
         data = self.assets['shikipress-1.1.1.zip']
@@ -117,7 +119,7 @@ class PublisherTests(unittest.TestCase):
             'update': {'requires': '6.6', 'requires_php': '8.2', 'tested': '7.1.3'},
         })
         self.assertEqual(specs[-1]['version'], '1.1.1')
-        self.assertIsNone(specs[-1]['commit'])
+        self.assertEqual(specs[-1]['commit'], '5391872439380cd8e9c73bfd60d9f015fd303436')
         self.assertFalse(specs[-1]['prerelease'])
         self.assertEqual(specs[-1]['update'], {'requires': '6.6', 'requires_php': '8.2', 'tested': '7.1.3'})
         self.assertIn("target_wp: '7.1.3'", (ROOT / '.github/workflows/compatibility.yml').read_text())
@@ -284,7 +286,7 @@ class PublisherTests(unittest.TestCase):
         item = {'spec': self.spec, 'source': self.source, 'tag': 'v1.1.1',
                 'release': copy.deepcopy(release), 'assets': self.assets}
         with mock.patch.dict(PUBLISHER, api=api, current_main=mock.Mock(),
-                             ci_gate=lambda sha: evidence, find_release=lambda tag: copy.deepcopy(release),
+                             ci_gate=lambda sha: evidence, stable_gate=mock.Mock(), find_release=lambda tag: copy.deepcopy(release),
                              tag_commit=lambda tag: self.source), mock.patch.object(PUBLISHER['subprocess'], 'run', upload):
             if corrupted:
                 with self.assertRaisesRegex(RuntimeError, 'Existing release asset differs'):
@@ -316,6 +318,93 @@ class PublisherTests(unittest.TestCase):
                                 {k: v for k, v in self.assets.items() if k != 'shikipress-update.json'})
         with self.assertRaisesRegex(RuntimeError, 'missing expected assets'):
             PUBLISHER['verify_assets'](release, self.assets, True)
+
+    def test_any_new_stable_version_is_derived_without_allowlist_edits(self):
+        for version in ('1.1.2', '1.2.0', '2.0.0'):
+            with self.subTest(version=version):
+                files = fixture(version)
+                spec = PUBLISHER['current_spec'](files)
+                self.assertEqual(spec, specification(files, version))
+                assets = PUBLISHER['package'](files, spec)
+                self.assertEqual(json.loads(assets['shikipress-update.json'])['version'], version)
+        files = {f'shikipress/{p.relative_to(ROOT / "shikipress").as_posix()}': p.read_bytes()
+                 for p in (ROOT / 'shikipress').rglob('*') if p.is_file()}
+        spec = PUBLISHER['current_spec'](files)
+        self.assertEqual(spec['version'], PUBLISHER['re'].search(rb'^Version:[ \t]*(\S+)', files['shikipress/style.css'], PUBLISHER['re'].M)[1].decode())
+        self.assertEqual(spec['sha256'], hashlib.sha256(reference_zip(files)).hexdigest())
+
+    def test_automatic_release_rejects_nonstable_and_changed_requirements(self):
+        for version in ('1.2.0-rc.1', '1.2', '01.2.0', '1.2.0+build'):
+            with self.subTest(version=version), self.assertRaises(RuntimeError):
+                PUBLISHER['current_spec'](fixture(version))
+        files = fixture('1.1.2')
+        files['shikipress/style.css'] = files['shikipress/style.css'].replace(b'Requires PHP: 8.2', b'Requires PHP: 8.3')
+        with self.assertRaisesRegex(RuntimeError, 'release-policy review'):
+            PUBLISHER['current_spec'](files)
+
+    def test_stable_gate_blocks_downgrades_and_invalid_latest(self):
+        for tag in ('v1.1.0', 'v1.1.1'):
+            with mock.patch.dict(PUBLISHER, api=lambda path: {'tag_name':tag, 'draft':False, 'prerelease':False}):
+                self.assertEqual(PUBLISHER['stable_gate'](self.spec), tag)
+        for release in ({'tag_name':'v1.1.2'}, {'tag_name':'v1.1.1-rc.1'},
+                        {'tag_name':'v1.1.1', 'draft':True}, {'tag_name':'v1.1.1', 'prerelease':True}):
+            with self.subTest(release=release), mock.patch.dict(PUBLISHER, api=lambda path: release), self.assertRaises(RuntimeError):
+                PUBLISHER['stable_gate'](self.spec)
+
+    def test_same_version_changed_bytes_cannot_republish(self):
+        original = release_state(self.spec, 'b' * 40, self.assets)
+        changed = dict(self.files, **{'shikipress/index.php': b'<?php // changed theme bytes'})
+        spec = PUBLISHER['current_spec'](changed)
+        with mock.patch.dict(PUBLISHER, find_release=lambda tag: original, tag_commit=lambda tag: 'b' * 40,
+                             ancestor=mock.Mock(), theme_at=lambda sha: self.files):
+            with self.assertRaisesRegex(RuntimeError, 'Pinned package checksum mismatch'):
+                PUBLISHER['prepare'](spec, self.source)
+
+    def test_documentation_only_same_version_is_read_only(self):
+        original = release_state(self.spec, 'b' * 40, self.assets)
+        reads = mock.Mock(side_effect=lambda path, **kwargs:
+                          self.assets[next(a['name'] for a in original['assets'] if path == f'releases/assets/{a["id"]}')])
+        with mock.patch.dict(PUBLISHER, find_release=lambda tag: original, tag_commit=lambda tag: 'b' * 40,
+                             ancestor=mock.Mock(), theme_at=lambda sha: self.files, api=reads):
+            prepared = PUBLISHER['prepare'](PUBLISHER['current_spec'](self.files), self.source)
+            reads.reset_mock()
+            PUBLISHER['publish'](prepared, self.source, [])
+            reads.assert_not_called()
+        self.assertEqual(original['assets'], release_state(self.spec, 'b' * 40, self.assets)['assets'])
+
+    def test_main_publishes_only_current_version_after_exact_ci(self):
+        files = fixture('1.1.2')
+        spec = PUBLISHER['current_spec'](files)
+        evidence = [{'id':1, 'attempt':2, 'url':'https://github.com/ci'}]
+        prepared = {'spec':spec}
+        publish = mock.Mock()
+        prepare = mock.Mock(return_value=prepared)
+        with tempfile.NamedTemporaryFile(mode='w') as event:
+            event.write('{}'); event.flush()
+            env = {'GITHUB_REPOSITORY':'crevice0308/shikipress', 'GITHUB_REF':'refs/heads/main',
+                   'GITHUB_SHA':self.source, 'GITHUB_EVENT_PATH':event.name, 'GITHUB_EVENT_NAME':'workflow_dispatch'}
+            with mock.patch.dict(PUBLISHER['os'].environ, env), mock.patch.dict(PUBLISHER,
+                    current_main=mock.Mock(), ci_gate=lambda sha:evidence, theme_at=lambda sha:files,
+                    stable_gate=mock.Mock(), prepare=prepare, publish=publish,
+                    api=lambda path: {'tag_name':'v1.1.2', 'draft':False, 'prerelease':False}):
+                PUBLISHER['main']()
+        prepare.assert_called_once_with(spec, self.source)
+        publish.assert_called_once_with(prepared, self.source, evidence)
+
+    def test_stale_event_and_unfinished_ci_cannot_prepare_or_publish(self):
+        for kind in ('stale', 'unfinished'):
+            payload = {'workflow_run': {'head_sha':'b' * 40}} if kind == 'stale' else {}
+            with tempfile.NamedTemporaryFile(mode='w') as event:
+                json.dump(payload, event); event.flush()
+                env = {'GITHUB_REPOSITORY':'crevice0308/shikipress', 'GITHUB_REF':'refs/heads/main',
+                       'GITHUB_SHA':self.source, 'GITHUB_EVENT_PATH':event.name,
+                       'GITHUB_EVENT_NAME':'workflow_run' if kind == 'stale' else 'workflow_dispatch'}
+                prepare, publish, theme_at = mock.Mock(), mock.Mock(), mock.Mock()
+                with mock.patch.dict(PUBLISHER['os'].environ, env), mock.patch.dict(PUBLISHER,
+                        current_main=mock.Mock(), ci_gate=lambda sha:None, theme_at=theme_at,
+                        prepare=prepare, publish=publish):
+                    PUBLISHER['main']()
+                for call in (prepare, publish, theme_at): call.assert_not_called()
 
     def test_ci_requires_exact_main_push_and_current_successful_run(self):
         valid = {'head_sha': self.source, 'head_branch': 'main', 'event': 'push',

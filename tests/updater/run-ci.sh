@@ -11,6 +11,14 @@ grep -Fxq 'Disposable ShikiPress regression database; never production' "$state/
 wp_root="$state/wordpress"
 reports="$state/reports/updater"
 export SHIKI_CI_STATE="$state"
+current_version="$(python3 - "$root/shikipress/style.css" <<'PYVERSION'
+from pathlib import Path
+import re, sys
+print(re.search(r'^Version:[ \t]*(\S+)', Path(sys.argv[1]).read_text(), re.M)[1])
+PYVERSION
+)"
+[[ "$current_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo 'Expected stable source version'; exit 1; }
+current_zip="$state/updater-real-$current_version.zip"
 # Avoid WP-CLI's synthetic admin menu bootstrap; the fixture loads real upgrader APIs.
 wp_ci() { wp --path="$wp_root" --allow-root --context=cli "$@"; }
 [[ "$(wp_ci config get DB_HOST --type=constant)" == 127.0.0.1 ]] || { echo 'Only local MySQL is allowed'; exit 1; }
@@ -43,30 +51,41 @@ previous=39cefcf2adf81110e6f0a068ee75bec36f48cdf3
 git -C "$root" cat-file -e "$previous:shikipress/functions.php"
 git -C "$root" archive --format=zip --output="$state/updater-bootstrap-1.0.4.zip" "$previous" shikipress
 python3 "$root/tests/upgrade/verify-package.py" "$state/updater-bootstrap-1.0.4.zip" 1.0.4
-python3 "$root/tests/upgrade/verify-package.py" --build "$root/shikipress" "$state/updater-real-1.1.1.zip"
+python3 "$root/tests/upgrade/verify-package.py" --build "$root/shikipress" "$current_zip"
 wp_ci theme install "$state/updater-bootstrap-1.0.4.zip" --force --activate
 wp_ci eval 'if (SHIKI_VERSION !== "1.0.4") { throw new RuntimeException("Historical 1.0.4 bootstrap failed"); }'
-wp_ci theme install "$state/updater-real-1.1.1.zip" --force --activate
-assert_retained manual-bootstrap-1.0.4-to-1.1.1
+wp_ci theme install "$current_zip" --force --activate
+assert_retained "manual-bootstrap-1.0.4-to-$current_version"
 assert_phase setup
 assert_phase security
 assert_retained rejected-packages
+assert_phase automatic-security
+assert_retained automatic-rejected-packages
+assert_phase automatic
+assert_phase verify-automatic
+assert_retained automatic-synthetic-update
+wp_ci theme install "$current_zip" --force --activate
+assert_phase verify-restored restored-after-automatic
+assert_retained automatic-restored
 assert_phase single
 assert_phase verify-single
 assert_retained single-synthetic-update
-wp_ci theme install "$state/updater-real-1.1.1.zip" --force --activate
+wp_ci theme install "$current_zip" --force --activate
 assert_phase verify-restored restored-after-single
 assert_retained single-restored
 assert_phase child-setup
 # A fresh bootstrap runs the child's activation lifecycle before checking its parent.
+assert_phase automatic automatic-with-child
+assert_phase verify-automatic verify-automatic-with-child
+wp_ci theme install "$current_zip" --force
 assert_phase bulk
 assert_phase verify-bulk
 assert_phase child-deactivate
 assert_phase child-cleanup
-wp_ci theme install "$state/updater-real-1.1.1.zip" --force --activate
+wp_ci theme install "$current_zip" --force --activate
 assert_phase verify-restored restored-after-bulk
 assert_retained bulk-restored
-python3 "$root/tests/upgrade/verify-package.py" "$state/updater-real-1.1.1.zip" --installed "$wp_root/wp-content/themes"
+python3 "$root/tests/upgrade/verify-package.py" "$current_zip" --installed "$wp_root/wp-content/themes"
 if [[ -f "$wp_root/wp-content/debug.log" ]]; then
   cp "$wp_root/wp-content/debug.log" "$reports/debug.log"
   if grep -E 'PHP (Fatal error|Parse error)|(Warning|Deprecated).*[/]shikipress[/]' "$reports/debug.log"; then exit 1; fi
