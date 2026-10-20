@@ -1,7 +1,7 @@
 <?php
-/** ShikiPress Ultimate bootstrap. Modified 2026-10-19 for 1.1.2. */
+/** ShikiPress Ultimate bootstrap. Modified 2026-10-20 for 1.1.3. */
 defined( 'ABSPATH' ) || exit;
-define( 'SHIKI_VERSION', '1.1.2' );
+define( 'SHIKI_VERSION', '1.1.3' );
 define( 'SHIKI_DIR', get_template_directory() );
 define( 'SHIKI_URL', get_template_directory_uri() );
 require_once SHIKI_DIR . '/inc/core.php';

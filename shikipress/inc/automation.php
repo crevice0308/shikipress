@@ -326,22 +326,48 @@ add_action('shiki_translate_job', function (int $post_id, string $token): void {
     if (!$post || !is_array($job) || ($job['state'] ?? '') !== 'queued' || (int) ($job['attempts'] ?? 0) >= 3 || !hash_equals((string) ($job['token'] ?? ''), $token) || !shiki_slug_editable($post) || hash('sha256', $post->post_title) !== ($job['title_hash'] ?? '') || !shiki_option('deepl_enabled')) { return; }
     if (!shiki_translation_budget_available()) { wp_schedule_single_event(time() + 60, 'shiki_translate_job', [$post_id, $token]); return; }
     $lock = 'shiki_translation_lock_' . $post_id;
-    $lock_token = shiki_acquire_job_lock($lock, 30); if (!$lock_token) { return; }
-    $job['state'] = 'working'; $job['attempts'] = (int) $job['attempts'] + 1; update_post_meta($post_id, '_shiki_translation', $job);
-    $result = shiki_deepl_request($post->post_title);
-    if (is_wp_error($result)) {
-        $retry = $result->get_error_data(); $job['message'] = $result->get_error_message();
-        if (!empty($retry['retry']) && $job['attempts'] < 3) { $job['state'] = 'queued'; wp_schedule_single_event(time() + 60 * (2 ** ($job['attempts'] - 1)), 'shiki_translate_job', [$post_id, $token]); }
-        else { $job['state'] = 'error'; }
-    } else { $job['state'] = 'done'; $job['slug'] = $result; $job['message'] = '候補を作成しました。意味を確認して採用してください。'; }
-    update_post_meta($post_id, '_shiki_translation', $job); shiki_release_job_lock($lock, $lock_token);
+    $lock_token = shiki_acquire_job_lock($lock, 30);
+    if (!$lock_token) {
+        // Cron consumes single events before calling us. Preserve a newer queued
+        // title while an older worker finishes, but never spin indefinitely.
+        $waiting = $job; $waiting['lock_waits'] = (int) ($job['lock_waits'] ?? 0) + 1;
+        if ($waiting['lock_waits'] > 3) { $waiting['state'] = 'error'; $waiting['message'] = '翻訳処理が混み合っています。時間をおいて再生成してください。'; }
+        if (update_post_meta($post_id, '_shiki_translation', $waiting, $job) && $waiting['state'] === 'queued') {
+            wp_schedule_single_event(time() + 30, 'shiki_translate_job', [$post_id, $token]);
+        }
+        return;
+    }
+    try {
+        $working = $job; $working['state'] = 'working'; $working['attempts'] = (int) $job['attempts'] + 1;
+        // WordPress compares the serialized previous value in the UPDATE and
+        // invalidates post-meta caches on success. A stale read cannot claim a replacement.
+        if (!update_post_meta($post_id, '_shiki_translation', $working, $job)) { return; }
+        $result = shiki_deepl_request($post->post_title); $finished = $working;
+        if (is_wp_error($result)) {
+            $retry = $result->get_error_data(); $finished['message'] = $result->get_error_message();
+            $finished['state'] = !empty($retry['retry']) && $working['attempts'] < 3 ? 'queued' : 'error';
+        } else { $finished['state'] = 'done'; $finished['slug'] = $result; $finished['message'] = '候補を作成しました。意味を確認して採用してください。'; }
+        // Only the still-current worker may publish its result or schedule its retry.
+        if (update_post_meta($post_id, '_shiki_translation', $finished, $working) && $finished['state'] === 'queued') {
+            wp_schedule_single_event(time() + 60 * (2 ** ($working['attempts'] - 1)), 'shiki_translate_job', [$post_id, $token]);
+        }
+    } finally { shiki_release_job_lock($lock, $lock_token); }
 }, 10, 2);
 add_action('wp_ajax_shiki_translation_status', function (): void {
     $post = shiki_automation_ajax_auth(); $job = get_post_meta($post->ID, '_shiki_translation', true);
     if (is_array($job) && hash('sha256', $post->post_title) !== ($job['title_hash'] ?? '')) { wp_send_json_success(['state' => 'error', 'slug' => '', 'message' => 'タイトルが変更されたため旧候補を破棄しました。再生成してください。']); }
     if (is_array($job) && in_array($job['state'] ?? '', ['queued', 'working'], true)) {
         $scheduled = !empty($job['token']) && wp_next_scheduled('shiki_translate_job', [$post->ID, $job['token']]); $lock = get_option('shiki_translation_lock_' . $post->ID, []);
-        if (!$scheduled && (!is_array($lock) || (int) ($lock['expires'] ?? 0) < time())) { $job['state'] = 'error'; $job['message'] = 'ジョブが解除または中断されました。送信内容を確認して再生成してください。'; update_post_meta($post->ID, '_shiki_translation', $job); }
+        if (!$scheduled && (!is_array($lock) || (int) ($lock['expires'] ?? 0) < time())) {
+            $stopped = $job; $stopped['state'] = 'error'; $stopped['message'] = 'ジョブが解除または中断されました。送信内容を確認して再生成してください。';
+            if (update_post_meta($post->ID, '_shiki_translation', $stopped, $job)) { $job = $stopped; }
+            else {
+                // A polling request must not cancel or report an older title for a replacement.
+                wp_cache_delete($post->ID, 'post_meta'); wp_cache_delete($post->ID, 'posts');
+                $job = get_post_meta($post->ID, '_shiki_translation', true); $post = get_post($post->ID);
+                if (is_array($job) && (!$post || hash('sha256', $post->post_title) !== ($job['title_hash'] ?? ''))) { wp_send_json_success(['state' => 'error', 'slug' => '', 'message' => 'タイトルが変更されたため旧候補を破棄しました。再生成してください。']); }
+            }
+        }
     }
     wp_send_json_success(['state' => $job['state'] ?? 'none', 'slug' => $job['slug'] ?? '', 'message' => $job['message'] ?? '処理待ちです。WP-Cronの実行を待ってください。']);
 });

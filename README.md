@@ -7,7 +7,7 @@
 配布済みのインストール用ZIPは[最新の正式Release](https://github.com/crevice0308/shikipress/releases/latest)から取得できます。以下はソースから生成する場合の手順です。
 
 1. `python3 scripts/package.py dist` でインストール用 ZIP を生成します。
-2. WordPress 管理画面の「外観 → テーマ → 新しいテーマを追加 → テーマのアップロード」から `dist/shikipress-1.1.2.zip` を選びます。
+2. WordPress 管理画面の「外観 → テーマ → 新しいテーマを追加 → テーマのアップロード」から `dist/shikipress-1.1.3.zip` を選びます。
 3. 既存サイトへの適用前にデータベースと wp-content 全体をバックアップし、ステージングで確認してください。
 
 GitHub の「Download ZIP」は開発資料も含むソース一式です。そのまま WordPress にアップロードせず、上記のテーマ ZIP を使ってください。1.1.0からはGitHubの正式Releaseを確認し、WordPress標準の管理画面から更新できます。1.1.0の更新検出・更新操作は利用でき、1.1.1では管理画面の「詳細」を通常のGitHub Releaseリンクに変更しています。1.1.2ではShikiPressダッシュボードに標準の自動更新ON/OFFを追加しています。管理者が有効にすると、以後の正式版をWordPressがバックグラウンドでインストールします。詳細は[管理画面でのテーマ更新](docs/theme-updates.md)を参照してください。

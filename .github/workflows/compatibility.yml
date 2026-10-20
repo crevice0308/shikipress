@@ -31,6 +31,11 @@ jobs:
           python3 tests/updater/fixtures.py "$RUNNER_TEMP/updater-unit-fixtures"
           php tests/updater/unit.php "$RUNNER_TEMP/updater-unit-fixtures"
           bash -n tests/updater/run-ci.sh
+          bash -n tests/automation-jobs/run-ci.sh
+          find tests/automation-jobs -type f -name '*.php' -print0 | xargs -0 -n1 php -l
+          for scenario in $(php tests/automation-jobs/unit.php --list); do
+            php tests/automation-jobs/unit.php "$scenario"
+          done
           find tests/updater -type f -name '*.php' -print0 | xargs -0 -n1 php -l
   content-retention:
     runs-on: ubuntu-latest
@@ -96,6 +101,15 @@ jobs:
         with:
           name: updater-wp-${{ matrix.target_wp }}-php-${{ matrix.next_php }}
           path: ${{ runner.temp }}/shikipress-retention-ci/reports/updater
+          if-no-files-found: warn
+      - name: Translation job ownership, retry recovery, and retained content
+        run: bash tests/automation-jobs/run-ci.sh
+      - name: Preserve native translation job evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: translation-jobs-wp-${{ matrix.target_wp }}-php-${{ matrix.next_php }}
+          path: ${{ runner.temp }}/shikipress-retention-ci/reports/translation-jobs
           if-no-files-found: warn
       - name: Official plugin activation, retention, and local rendering smoke
         run: bash tests/plugins/run-ci.sh
