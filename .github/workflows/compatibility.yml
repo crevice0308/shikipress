@@ -32,6 +32,10 @@ jobs:
           php tests/updater/unit.php "$RUNNER_TEMP/updater-unit-fixtures"
           bash -n tests/updater/run-ci.sh
           bash -n tests/automation-jobs/run-ci.sh
+          bash -n tests/link-lock/run-ci.sh
+          python3 -m py_compile tests/link-lock/run-integration.py
+          find tests/link-lock -type f -name '*.php' -print0 | xargs -0 -n1 php -l
+          php tests/link-lock/unit.php
           find tests/automation-jobs -type f -name '*.php' -print0 | xargs -0 -n1 php -l
           for scenario in $(php tests/automation-jobs/unit.php --list); do
             php tests/automation-jobs/unit.php "$scenario"
@@ -110,6 +114,15 @@ jobs:
         with:
           name: translation-jobs-wp-${{ matrix.target_wp }}-php-${{ matrix.next_php }}
           path: ${{ runner.temp }}/shikipress-retention-ci/reports/translation-jobs
+          if-no-files-found: warn
+      - name: Link-check lock ownership under real concurrent requests
+        run: bash tests/link-lock/run-ci.sh
+      - name: Preserve native link-lock evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: link-lock-wp-${{ matrix.target_wp }}-php-${{ matrix.next_php }}
+          path: ${{ runner.temp }}/shikipress-retention-ci/reports/link-lock
           if-no-files-found: warn
       - name: Official plugin activation, retention, and local rendering smoke
         run: bash tests/plugins/run-ci.sh

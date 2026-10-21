@@ -280,16 +280,25 @@ function shiki_link_fetch( $url ) {
 	}
 	return array( 'status' => 'redirect', 'detail' => 'リダイレクト上限。' );
 }
+/** Delete only the observed lock value; another request may replace it after our read. */
 function shiki_links_acquire_lock() {
+	global $wpdb;
 	$now = time(); $lock = (array) get_option( 'shikipress_link_lock', array() );
-	if ( ! empty( $lock['time'] ) && $lock['time'] < $now - 90 ) { delete_option( 'shikipress_link_lock' ); }
+	if ( ! empty( $lock['time'] ) && $lock['time'] < $now - 90 ) { shiki_delete_job_lock_value( 'shikipress_link_lock', $lock ); }
 	$token = wp_generate_uuid4();
-	if ( ! add_option( 'shikipress_link_lock', array( 'time' => $now, 'token' => $token ), '', false ) ) { return new WP_Error( 'locked', '検査が実行中です。' ); }
+	// add_option() can upsert a concurrent owner's value after its existence check.
+	$inserted = $wpdb->query( $wpdb->prepare(
+		"INSERT IGNORE INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, %s)",
+		'shikipress_link_lock', maybe_serialize( array( 'time' => $now, 'token' => $token ) ), 'no'
+	) );
+	wp_cache_delete( 'shikipress_link_lock', 'options' );
+	wp_cache_delete( 'notoptions', 'options' );
+	if ( 1 !== $inserted ) { return new WP_Error( 'locked', '検査が実行中です。' ); }
 	return $token;
 }
 function shiki_links_release_lock( $token ) {
 	$current = (array) get_option( 'shikipress_link_lock', array() );
-	if ( isset( $current['token'] ) && $current['token'] === $token ) { delete_option( 'shikipress_link_lock' ); }
+	if ( isset( $current['token'] ) && $current['token'] === $token ) { shiki_delete_job_lock_value( 'shikipress_link_lock', $current ); }
 }
 function shiki_links_run_queue() {
 	$now = time(); $token = shiki_links_acquire_lock();
