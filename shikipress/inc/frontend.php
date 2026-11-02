@@ -223,7 +223,7 @@ function shiki_toc($content) {
     $content = $processor->get_updated_html();
     if (count($headings) < 2) { return $content; }
     $toc = '<details class="article-toc" open><summary><span>この記事の目次</span><span class="toc-toggle">開く・閉じる</span></summary><ol>';
-    foreach ($headings as $heading) { $toc .= '<li class="toc-level-' . $heading['level'] . '"><a href="#' . esc_attr($heading['id']) . '">' . esc_html($heading['text']) . '</a></li>'; }
+    foreach ($headings as $heading) { $toc .= '<li class="toc-level-' . $heading['level'] . '"><a href="#' . esc_attr(rawurlencode($heading['id'])) . '">' . esc_html($heading['text']) . '</a></li>'; }
     return $toc . '</ol></details>' . $content;
 }
 add_filter('the_content', function ($content) {

@@ -18,6 +18,11 @@ try {
     shiki_front_assert(str_contains($quoted, '<h2 id=stable title="a>b">') && str_contains($quoted, 'href="#stable"'), 'TOC preserves greater-than quoted attributes and ignores ID-like prose');
     $attribute_ids = shiki_toc('<h2 title="literal id=fake" id=real>Heading</h2><h3>Next</h3>');
     shiki_front_assert(str_contains($attribute_ids,'href="#real"') && !str_contains($attribute_ids,'href="#fake"'), 'Core HTML parser ignores ID-looking strings inside other attributes');
+    foreach (['100%', 'section%20literal', '日本語の見出し', 'a#b?c'] as $author_id) {
+        $special = shiki_toc('<h2 id="' . esc_attr($author_id) . '">Author anchor</h2><h3>Next</h3>');
+        shiki_front_assert(str_contains($special, 'href="#' . rawurlencode($author_id) . '"'), 'TOC percent-encodes author anchor in link: ' . $author_id);
+        shiki_front_assert(str_contains($special, '<h2 id="' . esc_attr($author_id) . '">'), 'TOC preserves original author anchor: ' . $author_id);
+    }
     $private = wp_insert_post(['post_type' => 'page', 'post_status' => 'private', 'post_title' => 'TEST frontend private']); $created[] = $private;
     $password = wp_insert_post(['post_type' => 'page', 'post_status' => 'publish', 'post_title' => 'TEST frontend password', 'post_password' => 'test-only']); $created[] = $password;
     $public = wp_insert_post(['post_type' => 'page', 'post_status' => 'publish', 'post_title' => 'TEST frontend public']); $created[] = $public;
