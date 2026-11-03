@@ -90,5 +90,12 @@
     document.querySelectorAll('.entry-content table').forEach((table) => { if (table.closest('.wp-block-table,.table-scroll')) return; const wrap = document.createElement('div'); wrap.className = 'table-scroll'; wrap.tabIndex = 0; wrap.setAttribute('role', 'region'); wrap.setAttribute('aria-label', '横にスクロールできる表'); table.parentNode.insertBefore(wrap, table); wrap.appendChild(table); });
     document.querySelectorAll('.entry-content .wp-block-table').forEach((table) => { table.tabIndex = 0; table.setAttribute('role', 'region'); table.setAttribute('aria-label', '横にスクロールできる表'); });
     // Deep links keep normal browser history and work without JavaScript.
-    document.querySelectorAll('.article-toc a[href^="#"]').forEach((link) => link.addEventListener('click', () => { const target = document.getElementById(decodeURIComponent(link.hash.slice(1))); if (target) { target.tabIndex = -1; target.focus({ preventScroll: true }); } }));
+    document.querySelectorAll('.article-toc a[href^="#"]').forEach((link) => link.addEventListener('click', () => {
+        const fragment = link.hash.slice(1);
+        let id = fragment;
+        // Existing/cached markup may contain a literal percent sign, not a URI escape.
+        try { id = decodeURIComponent(fragment); } catch (_) { /* Keep the literal ID. */ }
+        const target = document.getElementById(id);
+        if (target) { target.tabIndex = -1; target.focus({ preventScroll: true }); }
+    }));
 })();

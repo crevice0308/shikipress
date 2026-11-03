@@ -36,6 +36,8 @@ jobs:
           python3 -m py_compile tests/link-lock/run-integration.py
           find tests/link-lock -type f -name '*.php' -print0 | xargs -0 -n1 php -l
           php tests/link-lock/unit.php
+          php -l tests/security-tools/unit.php
+          php tests/security-tools/unit.php
           find tests/automation-jobs -type f -name '*.php' -print0 | xargs -0 -n1 php -l
           for scenario in $(php tests/automation-jobs/unit.php --list); do
             php tests/automation-jobs/unit.php "$scenario"

@@ -4,7 +4,8 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "test": "node run-wordpress-layout.mjs"
+    "test": "node run-wordpress-layout.mjs",
+    "test:dependencies": "node dependency-smoke.cjs"
   },
   "devDependencies": {
     "@wp-playground/cli": "3.1.58",
@@ -13,5 +14,10 @@
   "engines": {
     "node": ">=24.18.0",
     "npm": ">=11.16.0"
+  },
+  "overrides": {
+    "express": {
+      "qs": "6.16.2"
+    }
   }
 }
