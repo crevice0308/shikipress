@@ -129,9 +129,9 @@ function shiki_public_query_scope( $query ) {
     if ( $query->is_search() || $query->is_archive() || $query->is_home() || $query->is_feed() ) {
         $query->set( 'has_password', false );
         $query->set( 'post_status', 'publish' );
-        $meta = (array) $query->get( 'meta_query' );
-        $meta[] = shiki_visibility_meta_query();
-        $query->set( 'meta_query', $meta );
+        // Nest any existing clauses so a third-party OR relation cannot widen the public scope.
+        $meta = $query->get( 'meta_query' );
+        $query->set( 'meta_query', is_array( $meta ) && $meta ? array( 'relation' => 'AND', $meta, shiki_visibility_meta_query() ) : array( shiki_visibility_meta_query() ) );
         $excluded = array_map( 'absint', (array) shiki_option( 'page_exclude', array() ) );
         if ( $excluded ) {
             $query->set( 'post__not_in', array_unique( array_merge( (array) $query->get( 'post__not_in' ), $excluded ) ) );
@@ -224,7 +224,7 @@ function shiki_sanitize_settings( $input ) {
     if ( 'shikipress' !== ( $_POST['option_page'] ?? '' ) ) {
         return is_array( $input ) ? array_intersect_key( $input, shiki_defaults() ) : get_option( 'shikipress_settings', array() );
     }
-    $section = sanitize_key( wp_unslash( $_POST['shikipress_section'] ?? '' ) );
+    $section = is_string( $_POST['shikipress_section'] ?? null ) ? sanitize_key( wp_unslash( $_POST['shikipress_section'] ) ) : '';
     if ( ! in_array( $section, array( 'dashboard', 'design', 'automation', 'navigation', 'ads', 'seo', 'diagnostics', 'backup' ), true ) ) {
         return get_option( 'shikipress_settings', array() );
     }
@@ -258,7 +258,7 @@ function shiki_admin_url( $tab = 'dashboard' ) { return add_query_arg( array( 'p
 function shiki_admin_page( $requested = '' ) {
     if ( ! current_user_can( 'manage_options' ) ) { wp_die( esc_html__( 'この設定へのアクセス権限がありません。', 'shikipress' ), '', array( 'response' => 403 ) ); }
     $tabs = shiki_admin_tabs();
-    $tab = $requested ?: sanitize_key( wp_unslash( $_GET['tab'] ?? 'dashboard' ) );
+    $tab = $requested ?: ( is_string( $_GET['tab'] ?? null ) ? sanitize_key( wp_unslash( $_GET['tab'] ) ) : 'dashboard' );
     if ( ! isset( $tabs[ $tab ] ) ) { $tab = 'dashboard'; }
     echo '<div class="wrap shiki-admin"><div class="shiki-admin-heading"><span class="shiki-admin-mark">栞</span><div><p>SHIKIPRESS ULTIMATE · ' . esc_html( SHIKI_VERSION ) . '</p><h1>' . esc_html( $tabs[ $tab ] ) . '</h1></div></div><nav class="shiki-admin-nav" aria-label="ShikiPress設定">';
     foreach ( $tabs as $key => $label ) { echo '<a class="' . ( $tab === $key ? 'is-current' : '' ) . '" href="' . esc_url( shiki_admin_url( $key ) ) . '"' . ( $tab === $key ? ' aria-current="page"' : '' ) . '>' . esc_html( $label ) . '</a>'; }

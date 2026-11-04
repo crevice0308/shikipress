@@ -80,6 +80,15 @@ try {
     $request = new WP_REST_Request('POST', '/shikipress/v1/view'); $request->set_param('post_id', $visible); $request->set_header('user-agent', 'Mozilla/5.0 Test Browser'); $request->set_header('origin', home_url()); $response = rest_do_request($request); shiki_auto_test_assert($response->get_status() === 200 && $response->get_data()['counted'], 'opt-in anonymous view aggregation');
     delete_transient('shiki_popular_30'); shiki_auto_test_assert((shiki_popular_counts()[$visible] ?? 0) >= 1, 'popular from measured aggregate');
     $request->set_header('origin', 'https://unrelated.example'); shiki_auto_test_assert(rest_do_request($request)->get_status() === 403, 'view cross-origin rejected');
+    $before_rows = (int) $GLOBALS['wpdb']->get_var('SELECT COUNT(*) FROM ' . shiki_views_table());
+    foreach ([[$visible], 'abc', 0, -1, null] as $invalid_id) {
+        $invalid_request = new WP_REST_Request('POST', '/shikipress/v1/view'); $invalid_request->set_header('user-agent', 'Mozilla/5.0 Test Browser'); $invalid_request->set_header('origin', home_url());
+        $invalid_request->set_body_params(['post_id' => $invalid_id]); $invalid_response = rest_do_request($invalid_request);
+        shiki_auto_test_assert($invalid_response->get_status() === 400 && empty($invalid_response->get_data()['counted']), 'view rejects non-integer post_id ' . wp_json_encode($invalid_id));
+    }
+    $invalid_request = new WP_REST_Request('POST', '/shikipress/v1/view'); $invalid_request->set_header('user-agent', 'Mozilla/5.0 Test Browser'); $invalid_request->set_header('origin', home_url()); $invalid_request->set_body_params(['post_id' => $visible, 'cmp_id' => ['1']]);
+    shiki_auto_test_assert(rest_do_request($invalid_request)->get_status() === 400, 'view rejects non-integer cmp_id');
+    shiki_auto_test_assert($before_rows === (int) $GLOBALS['wpdb']->get_var('SELECT COUNT(*) FROM ' . shiki_views_table()), 'invalid view parameters never create counter rows');
     wp_set_current_user(1);
     shiki_schedule_automation(); $first_cron = wp_next_scheduled('shiki_season_tick'); shiki_schedule_automation(); shiki_auto_test_assert($first_cron === wp_next_scheduled('shiki_season_tick'), 'cron does not multiply');
     wp_delete_term($mapping['winter'], 'category'); shiki_schedule_automation(); shiki_auto_test_assert(!isset(shiki_season_terms()['winter']) && !term_exists($mapping['winter'], 'category'), 'deleted mapped category not silently recreated');

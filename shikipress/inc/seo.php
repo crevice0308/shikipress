@@ -31,7 +31,9 @@ function shiki_seo_limit($text, $length) {
 function shiki_seo_text($text, $length = 160) {
     $text = strip_shortcodes((string) $text);
     $text = html_entity_decode(wp_strip_all_tags($text), ENT_QUOTES | ENT_HTML5, 'UTF-8');
-    return shiki_seo_limit(trim(preg_replace('/\s+/u', ' ', $text)), $length);
+    // Malformed byte sequences make the Unicode regex return null; keep the string path.
+    $collapsed = preg_replace('/\s+/u', ' ', $text);
+    return shiki_seo_limit(trim(is_string($collapsed) ? $collapsed : (string) wp_check_invalid_utf8($text)), $length);
 }
 /** Known SEO plugins own metadata if installed; the default needs no plugin. */
 function shiki_seo_managed() {
