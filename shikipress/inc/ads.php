@@ -167,6 +167,8 @@ function shiki_ads_named_slot(string $id): string {
 add_filter('the_content', function ($content) {
     if (!is_singular() || !in_the_loop() || !is_main_query() || is_admin() || is_feed() || is_preview()) { return $content; }
     $slots = array_filter((array) shiki_option('ads_slots', []), function ($slot) { return is_array($slot) && in_array($slot['position'] ?? '', ['middle','before_h2','after_h2'], true); });
+    // Stored intervals are validated on save; keep the modulo defined for any legacy or imported value.
+    foreach ($slots as &$slot) { $slot['interval'] = max(1, (int) ($slot['interval'] ?? 3)); } unset($slot);
     $body = $content;
     if ($slots && has_blocks($content)) {
         $parts = parse_blocks($content); $body = ''; $paragraphs = 0; $headings = 0;

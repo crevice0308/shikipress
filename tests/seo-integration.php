@@ -116,6 +116,11 @@ try {
     shiki_seo_test_assert(!str_contains($safe['seo_google_verification'], '<') && 100 === $safe['seo_sitemap_per_page'], 'settings token and bound sanitation');
     $image=shiki_seo_image();
     shiki_seo_test_assert(1200 === $image['width'] && 630 === $image['height'] && str_ends_with($image['url'], '.png'), 'crawler compatible fallback');
+    // Malformed UTF-8 (e.g. a crafted search query) must yield a plain string without PHP notices.
+    $strict_handler = static function ($errno, $errstr) { throw new RuntimeException('PHP notice during metadata text: ' . $errstr); };
+    set_error_handler($strict_handler, E_ALL);
+    try { $malformed = shiki_seo_text("検索 \xff\xfe 語", 160); } finally { restore_error_handler(); }
+    shiki_seo_test_assert(is_string($malformed) && 'string' === gettype(shiki_seo_text(null)), 'malformed byte sequence metadata text');
     $denied = $make('nonce deny');
     $_POST=['_shiki_noindex'=>'1'];
     do_action('save_post', $denied, get_post($denied), true);

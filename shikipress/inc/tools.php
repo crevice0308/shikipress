@@ -35,7 +35,7 @@ function shiki_tools_redirect( $tab, $notice ) {
 }
 function shiki_tools_notice() {
 	$messages = array( 'scanned' => '内部リンクを最大40記事分検査しました。', 'external' => '外部キューを処理しました。', 'rate' => '外部検査は60秒以上空けて実行してください。', 'locked' => '他の検査が実行中です。', 'preview' => '設定を検証しました。プレビューを確認して適用対象を選んでください。', 'applied' => '選択した設定を適用しました。広告・実行コード・任意の閲覧集計はテスト・無効状態です。', 'restored' => '適用前の設定を復元しました。広告・実行コード・任意の閲覧集計はテスト・無効状態です。' );
-	$key = isset( $_GET['shiki_notice'] ) ? sanitize_key( wp_unslash( $_GET['shiki_notice'] ) ) : '';
+	$key = is_string( $_GET['shiki_notice'] ?? null ) ? sanitize_key( wp_unslash( $_GET['shiki_notice'] ) ) : '';
 	if ( isset( $messages[ $key ] ) ) {
 		echo '<div class="notice notice-success inline"><p>' . esc_html( $messages[ $key ] ) . '</p></div>';
 	}

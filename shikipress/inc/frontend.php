@@ -198,7 +198,8 @@ function shiki_toc($content) {
         if ($type === '#tag' && in_array($tag, ['H2', 'H3'], true)) {
             if ($processor->is_tag_closer()) {
                 if ($active !== null && $active['level'] === (int) substr($tag, 1)) {
-                    $active['text'] = trim(preg_replace('/\s+/u', ' ', $active['text']));
+                    $collapsed = preg_replace('/\s+/u', ' ', $active['text']);
+                    $active['text'] = trim(is_string($collapsed) ? $collapsed : (string) wp_check_invalid_utf8($active['text']));
                     if ($active['text'] !== '') { $headings[] = $active; }
                     $active = null;
                 }

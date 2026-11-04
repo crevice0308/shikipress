@@ -61,7 +61,7 @@ function shiki_timezone(): DateTimeZone {
     catch (Exception $exception) { return new DateTimeZone('Asia/Tokyo'); }
 }
 function shiki_is_season_preview(): bool {
-    return !is_admin() && current_user_can('manage_options') && isset($_GET['shiki_preview_season'], $_GET['_wpnonce']) && isset(shiki_seasons()[sanitize_key(wp_unslash($_GET['shiki_preview_season']))]) && wp_verify_nonce(sanitize_text_field(wp_unslash($_GET['_wpnonce'])), 'shiki_season_preview');
+    return !is_admin() && current_user_can('manage_options') && is_string($_GET['shiki_preview_season'] ?? null) && is_string($_GET['_wpnonce'] ?? null) && isset(shiki_seasons()[sanitize_key(wp_unslash($_GET['shiki_preview_season']))]) && wp_verify_nonce(sanitize_text_field(wp_unslash($_GET['_wpnonce'])), 'shiki_season_preview');
 }
 add_action('template_redirect', function (): void {
     if (shiki_is_season_preview()) {
@@ -166,7 +166,7 @@ function shiki_slug_candidate(string $title): array {
     $remaining = $title;
     foreach ($dictionary as $word => $english) { $remaining = str_replace($word, ' ' . $english . ' ', $remaining); }
     $remaining = preg_replace('/[のをにでとやはがもへ、。！？!?:：・「」『』（）()\s]+/u', ' ', $remaining);
-    if (preg_match('/[^\x20-\x7E]/', $remaining)) { return ['slug' => '', 'source' => '辞書の範囲外。英語候補を手入力、または許可したDeepL翻訳を利用してください。', 'complete' => false]; }
+    if (!is_string($remaining) || preg_match('/[^\x20-\x7E]/', $remaining)) { return ['slug' => '', 'source' => '辞書の範囲外。英語候補を手入力、または許可したDeepL翻訳を利用してください。', 'complete' => false]; }
     return ['slug' => shiki_clean_english_slug($remaining), 'source' => '限定語彙の辞書・ルール候補。意味を確認してください。', 'complete' => true];
 }
 function shiki_slug_editable($post): bool {
@@ -471,7 +471,12 @@ add_action('rest_api_init', function (): void {
         shiki_install_views_table(); global $wpdb; $table = shiki_views_table(); $day = (new DateTimeImmutable('now', shiki_timezone()))->format('Y-m-d');
         $wpdb->query($wpdb->prepare("INSERT INTO $table (post_id, view_day, views) VALUES (%d, %s, 1) ON DUPLICATE KEY UPDATE views=views+1", $post->ID, $day)); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- trusted table prefix only.
         return new WP_REST_Response(['counted' => true], 200);
-    }, 'args' => ['post_id' => ['required' => true, 'type' => 'integer', 'sanitize_callback' => 'absint']]]);
+    }, 'args' => [
+        // register_rest_route() applies no schema validation unless a validate_callback is given.
+        'post_id' => ['required' => true, 'type' => 'integer', 'minimum' => 1, 'validate_callback' => 'rest_validate_request_arg', 'sanitize_callback' => 'rest_sanitize_request_arg'],
+        'consent' => ['type' => 'string', 'validate_callback' => 'rest_validate_request_arg', 'sanitize_callback' => 'rest_sanitize_request_arg'],
+        'cmp_id' => ['type' => 'integer', 'minimum' => 0, 'validate_callback' => 'rest_validate_request_arg', 'sanitize_callback' => 'rest_sanitize_request_arg'],
+    ]]);
 });
 add_action('wp_enqueue_scripts', function (): void {
     if (!shiki_option('view_count_enabled') || !is_singular('post') || (is_user_logged_in() && current_user_can('edit_posts')) || post_password_required() || get_post_meta(get_queried_object_id(), '_shiki_exclude', true)) { return; }
