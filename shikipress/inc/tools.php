@@ -248,9 +248,12 @@ function shiki_link_fetch( $url ) {
 	for ( $hop = 0; $hop <= 2; ++$hop ) {
 		$target = shiki_link_safe_target( $url );
 		if ( is_wp_error( $target ) ) { return array( 'status' => 'unsafe' === $target->get_error_code() ? 'unsafe' : 'uncertain', 'detail' => $target->get_error_message() ); }
-		if ( ! function_exists( 'curl_init' ) || ! defined( 'CURLOPT_RESOLVE' ) ) { return array( 'status' => 'uncertain', 'detail' => 'DNS固定に必要なcURLが未導入のためHTTP取得を見送りました。' ); }
-		$force_transport = static function ( &$request_url, &$headers, &$data, &$type, &$options ) use ( $url ) {
-			if ( $request_url === $url ) { $options['transport'] = 'WpOrg\\Requests\\Transport\\Curl'; }
+		// The pinned cURL transport must be usable (curl_exec may be disabled while curl_init exists); never fall back to an unpinned transport.
+		$curl_ready = class_exists( '\WpOrg\Requests\Transport\Curl' ) && \WpOrg\Requests\Transport\Curl::test( array( \WpOrg\Requests\Capability::SSL => 'https' === strtolower( (string) wp_parse_url( $url, PHP_URL_SCHEME ) ) ) );
+		if ( ! $curl_ready || ! defined( 'CURLOPT_RESOLVE' ) ) { return array( 'status' => 'uncertain', 'detail' => 'DNS固定に必要なcURLが未導入のためHTTP取得を見送りました。' ); }
+		// Requests normalises the URL (e.g. adds a trailing slash) before this hook, so match the checked host.
+		$force_transport = static function ( &$request_url, &$headers, &$data, &$type, &$options ) use ( $target ) {
+			if ( is_string( $request_url ) && strtolower( trim( (string) wp_parse_url( $request_url, PHP_URL_HOST ), '[]' ) ) === $target['host'] ) { $options['transport'] = 'WpOrg\\Requests\\Transport\\Curl'; }
 		};
 		$pin = static function ( $handle, $args, $request_url ) use ( $url, $target ) {
 			if ( $request_url !== $url ) { return; }

@@ -57,6 +57,11 @@ try {
     ob_start();shiki_page_links();$page_links=ob_get_clean();shiki_front_assert(str_contains($page_links,'additional-pages') && str_contains($page_links,'その他の固定ページ'), 'Many public pages use native accessible details disclosure');
     shiki_front_assert(!str_contains($page_links,'TEST frontend private') && !str_contains($page_links,'TEST frontend password') && !str_contains($page_links,'TEST frontend excluded'), 'Expanded page groups keep all private/password/excluded pages out');
     $hidden_settings=shiki_validate_settings(['hero_title'=>'<script>x</script>見出し','toc_enabled'=>1],'design',$old_settings); shiki_front_assert(!str_contains($hidden_settings['hero_title'],'<'), 'Hero title sanitizes markup');
+    // A menu location that points at a deleted menu must not fall back to core's page list, which ignores exclusions.
+    $old_locations=get_theme_mod('nav_menu_locations');$menu_page=wp_insert_post(['post_type'=>'page','post_status'=>'publish','post_title'=>'TEST frontend menu fallback hidden']);$created[]=$menu_page;
+    update_option('shikipress_settings',array_merge(get_option('shikipress_settings'),['page_exclude'=>[$menu_page]]));set_theme_mod('nav_menu_locations',array_merge((array)$old_locations,['primary'=>999999,'footer'=>999999]));
+    try{ob_start();locate_template('header.php',true,false);locate_template('footer.php',true,false);$chrome=(string)ob_get_clean();}finally{set_theme_mod('nav_menu_locations',$old_locations);}
+    shiki_front_assert(!str_contains($chrome,'TEST frontend menu fallback hidden')&&str_contains($chrome,'data-panel="nav-categories"'),'Stale menu locations use the theme navigation, never the unfiltered core page list');
 } catch (Throwable $error) { $results[]=['error'=>$error->getMessage(),'pass'=>false]; }
 finally { update_option('shikipress_settings',$old_settings);update_option('show_on_front',$old_reading);update_option('page_on_front',$old_front); foreach($created as $id){wp_delete_post($id,true);}foreach($term_ids as $id){wp_delete_term($id,'category');}$GLOBALS['wp_query']=$old_query;$GLOBALS['wp_the_query']=$old_main;shiki_invalidate_cache(); }
 file_put_contents(__DIR__.'/results/frontend-integration.json',wp_json_encode($results, JSON_UNESCAPED_UNICODE|JSON_PRETTY_PRINT));

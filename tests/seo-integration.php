@@ -14,6 +14,7 @@ $original_settings = get_option('shikipress_settings', []);
 $original_public = get_option('blog_public');
 $original_permalink = get_option('permalink_structure');
 $original_show = get_option('show_on_front');
+$original_front = get_option('page_on_front');
 $old_user = get_current_user_id();
 wp_set_current_user(1);
 try {
@@ -121,6 +122,22 @@ try {
     set_error_handler($strict_handler, E_ALL);
     try { $malformed = shiki_seo_text("検索 \xff\xfe 語", 160); } finally { restore_error_handler(); }
     shiki_seo_test_assert(is_string($malformed) && 'string' === gettype(shiki_seo_text(null)), 'malformed byte sequence metadata text');
+    // Excluding the static front page from page lists must never de-index the home page.
+    $front = wp_insert_post(['post_type'=>'page','post_status'=>'publish','post_title'=>'TEST SEO front','post_content'=>'TEST']); $created[] = $front;
+    update_option('show_on_front', 'page'); update_option('page_on_front', $front);
+    update_option('shikipress_settings', array_merge(get_option('shikipress_settings'), ['page_exclude'=>[$front, $excluded_page]]));
+    shiki_seo_test_assert(shiki_seo_is_public_post($front, true) && !shiki_seo_is_public_post($excluded_page), 'excluded static front page stays indexable while other excluded pages stay private');
+    $map_args = shiki_seo_map_args(['post_type'=>'page'], 'page');
+    shiki_seo_test_assert(!in_array($front, $map_args['post__not_in'], true) && in_array($excluded_page, $map_args['post__not_in'], true), 'excluded static front page stays in the XML sitemap');
+    update_option('show_on_front', 'posts');
+    // /page/N/ on a latest-posts front page renders the same curated home: the canonical is the home URL.
+    query_posts(['paged'=>2]);
+    shiki_seo_test_assert(is_front_page() && shiki_seo_canonical() === home_url('/'), 'paged front page canonical is the home URL');
+    wp_reset_query();
+    // A search limited to a missing category has no term object: breadcrumbs must not raise warnings.
+    set_error_handler($strict_handler, E_ALL);
+    try { query_posts(['s'=>'TEST','cat'=>999999]); $missing_crumbs = shiki_breadcrumb_items(); } finally { restore_error_handler(); wp_reset_query(); }
+    shiki_seo_test_assert(is_array($missing_crumbs) && str_contains((string) end($missing_crumbs)['name'], 'TEST'), 'search with a missing category builds breadcrumbs without warnings');
     $denied = $make('nonce deny');
     $_POST=['_shiki_noindex'=>'1'];
     do_action('save_post', $denied, get_post($denied), true);
@@ -139,6 +156,7 @@ try {
     update_option('blog_public', $original_public);
     update_option('permalink_structure', $original_permalink);
     update_option('show_on_front', $original_show);
+    update_option('page_on_front', $original_front);
     wp_set_current_user($old_user);
     shiki_invalidate_cache();
 }

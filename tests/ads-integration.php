@@ -41,6 +41,18 @@ try {
     $dom=new DOMDocument(); @$dom->loadHTML('<?xml encoding="UTF-8">'.$rendered); $xpath=new DOMXPath($dom); $assert(0 === $xpath->query('//a//aside | //p//aside | //div[contains(@class,"wp-block-group")]//aside')->length,'ads never inserted inside link, paragraph, or nested block group');
     $slot['id']='h2-only'; $slot['position']='before_h2'; $slot['interval']=1; $settings['ads_slots']=[$slot]; update_option('shikipress_settings',$settings,false);
     $rendered=apply_filters('the_content',$content.'<!-- wp:heading --><h2 class="wp-block-heading">outer</h2><!-- /wp:heading -->'); $assert(1 === substr_count($rendered,'data-shiki-ad='),'nested headings skipped, top-level heading eligible');
+    // Classic (non-block) content: ads are placed after wpautop without re-serialising the author's markup.
+    $classic="lead&nbsp;text<br>\n\n<h2>classic heading</h2>\n\nsecond\n\n<div class=\"box\">\n\n<p>nested one</p>\n\n<p>nested two</p>\n\n</div>\n\n<figure><video controls><source src=\"/TEST.mp4\" type=\"video/mp4\"></video></figure>\n\n<table><tr><td>1<td>2</table>\n\n<script>var TEST = 1 < 2;</script>\n\nlast";
+    $settings_before_classic=$settings; $settings['ads_limit']=12; $settings['ads_slots']=[]; update_option('shikipress_settings',$settings,false); $plain=apply_filters('the_content',$classic);
+    $settings['ads_slots']=[array_merge($slot,['id'=>'classic-middle','position'=>'middle','interval'=>1,'limit'=>3]),array_merge($slot,['id'=>'classic-h2','position'=>'after_h2','interval'=>1,'limit'=>1]),array_merge($slot,['id'=>'classic-below','position'=>'below','limit'=>1])]; update_option('shikipress_settings',$settings,false);
+    $rendered=apply_filters('the_content',$classic); $without=preg_replace('#<aside class="shiki-ad".*?</aside>#s','',$rendered);
+    $assert(5 === substr_count($rendered,'data-shiki-ad=') && $without === $plain && !str_contains($rendered,'data-shiki-ad-mark'),'classic content gets middle, H2 and below ads with the post markup preserved byte for byte');
+    $assert(!preg_match('#<aside class="shiki-ad"[^>]*>(?:(?!</aside>).)*</p>#s',$rendered),'classic ad markup is never split by automatic paragraphs');
+    $dom=new DOMDocument(); @$dom->loadHTML('<?xml encoding="UTF-8">'.$rendered); $xpath=new DOMXPath($dom); $assert(0 === $xpath->query('//p//aside | //div[@class="box"]//aside | //table//aside | //figure//aside | //h2//aside | //script[contains(.,"shiki-ad")]')->length,'classic ads stay between top-level elements');
+    $settings['ads_slots']=[array_merge($slot,['id'=>'excerpt-above','position'=>'above','limit'=>1])]; update_option('shikipress_settings',$settings,false);
+    $excerpt=apply_filters('get_the_excerpt','',get_post($id));
+    $assert(!str_contains($excerpt,'広告') && str_contains(apply_filters('the_content',$classic),'data-shiki-ad='),'automatic excerpts neither receive nor consume ad slots');
+    $settings=$settings_before_classic; update_option('shikipress_settings',$settings,false);
     $registered=WP_Block_Type_Registry::get_instance()->get_registered('shikipress/ad-slot'); $assert($registered && is_callable($registered->render_callback),'real dynamic Gutenberg slot block is registered');
     $restored=shiki_ads_reset_import(['ads_mode'=>'production','ads_live_approved'=>true,'ads_auto'=>true,'ads_cmp_enabled'=>true,'ads_cmp_trusted'=>true,'ads_external_reviewed'=>true,'ads_slots'=>[$slot]]);
     $assert('test' === $restored['ads_mode'] && !$restored['ads_live_approved'] && !$restored['ads_auto'] && !$restored['ads_cmp_enabled'] && !$restored['ads_cmp_trusted'] && !$restored['ads_slots'][0]['trusted'],'imports and restores disarm all external execution');

@@ -14,7 +14,7 @@ $shiki_tabs = array_merge(['home' => 'ホーム', 'categories' => 'カテゴリ�
             foreach ($shiki_role_ids as $page_id) { if (in_array($page_id, $shiki_public, true)) { echo '<li><a href="' . esc_url(get_permalink($page_id)) . '">' . esc_html(get_the_title($page_id)) . '</a></li>'; } }
             echo '</ul>';
         }
-        if (has_nav_menu('footer')) { wp_nav_menu(['theme_location' => 'footer', 'container' => false, 'menu_class' => 'footer-menu', 'depth' => 1]); }
+        if (has_nav_menu('footer')) { wp_nav_menu(['theme_location' => 'footer', 'container' => false, 'menu_class' => 'footer-menu', 'depth' => 1, 'fallback_cb' => false]); }
         ?><a class="text-link" href="#nav-pages" data-panel="nav-pages" aria-controls="nav-pages" aria-expanded="false">固定ページ一覧 <?php echo shiki_icon('arrow'); ?></a></div></div>
     <div class="footer-bottom wrap"><small>&copy; <?php echo esc_html(wp_date('Y')); ?> <?php bloginfo('name'); ?></small><span class="footer-motto">四季を、ていねいに。</span><a href="#page-top" class="back-top">ページ上部へ <?php echo shiki_icon('up'); ?></a></div>
 </footer>

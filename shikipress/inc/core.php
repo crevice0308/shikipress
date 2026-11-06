@@ -63,6 +63,8 @@ add_action( 'init', static function () {
 function shiki_invalidate_cache() {
     $epoch = (int) get_option( 'shikipress_cache_epoch', 1 );
     update_option( 'shikipress_cache_epoch', $epoch + 1, false );
+    // Scoped comment queries depend on post visibility; persistent object caches must not keep stale results.
+    wp_cache_set_comments_last_changed();
     do_action( 'shiki_cache_invalidated' );
 }
 add_action( 'save_post', 'shiki_invalidate_cache', 90, 0 );
@@ -95,6 +97,18 @@ function shiki_visibility_meta_query() {
     return array( 'relation' => 'OR', array( 'key' => '_shiki_exclude', 'compare' => 'NOT EXISTS' ), array( 'key' => '_shiki_exclude', 'value' => '1', 'compare' => '!=' ) );
 }
 
+/**
+ * Hidden categories as a nested AND clause. core appends category__not_in beside a
+ * caller's tax_query under the caller's top-level relation, so an OR relation (for
+ * example REST tax_relation=OR) would otherwise widen the public scope.
+ */
+function shiki_hidden_category_tax_query( $tax_query, $hidden ) {
+    $hidden = shiki_ids( $hidden );
+    if ( ! $hidden ) { return $tax_query; }
+    $clause = array( 'taxonomy' => 'category', 'field' => 'term_id', 'terms' => $hidden, 'operator' => 'NOT IN', 'include_children' => false );
+    return is_array( $tax_query ) && $tax_query ? array( 'relation' => 'AND', $tax_query, $clause ) : array( $clause );
+}
+
 function shiki_public_posts( $args = array() ) {
     $meta = isset( $args['meta_query'] ) ? $args['meta_query'] : array();
     $args = wp_parse_args( $args, array( 'post_type' => 'post', 'posts_per_page' => 6, 'ignore_sticky_posts' => true, 'orderby' => array( 'date' => 'DESC', 'ID' => 'DESC' ) ) );
@@ -102,9 +116,8 @@ function shiki_public_posts( $args = array() ) {
     $args['has_password'] = false;
     $args['suppress_filters'] = false;
     $args['meta_query'] = empty( $meta ) ? array( shiki_visibility_meta_query() ) : array( 'relation' => 'AND', $meta, shiki_visibility_meta_query() );
-    $hidden = array_map( 'absint', (array) shiki_option( 'category_exclude', array() ) );
-    if ( 'post' === $args['post_type'] && $hidden ) {
-        $args['category__not_in'] = array_values( array_unique( array_merge( $hidden, (array) ( $args['category__not_in'] ?? array() ) ) ) );
+    if ( 'post' === $args['post_type'] ) {
+        $args['tax_query'] = shiki_hidden_category_tax_query( $args['tax_query'] ?? array(), shiki_option( 'category_exclude', array() ) );
     }
     return new WP_Query( $args );
 }
@@ -136,9 +149,9 @@ function shiki_public_query_scope( $query ) {
         if ( $excluded ) {
             $query->set( 'post__not_in', array_unique( array_merge( (array) $query->get( 'post__not_in' ), $excluded ) ) );
         }
-        $categories = array_map( 'absint', (array) shiki_option( 'category_exclude', array() ) );
+        $categories = shiki_ids( shiki_option( 'category_exclude', array() ) );
         if ( $categories ) {
-            $query->set( 'category__not_in', array_unique( array_merge( (array) $query->get( 'category__not_in' ), $categories ) ) );
+            $query->set( 'tax_query', shiki_hidden_category_tax_query( $query->get( 'tax_query' ), $categories ) );
         }
     }
 }
@@ -146,12 +159,13 @@ add_action( 'pre_get_posts', 'shiki_public_query_scope' );
 
 /** Public REST lists follow the same scope; authenticated editor requests retain core access. */
 function shiki_rest_public_scope( $args, $request ) {
-    if ( 'edit' === $request->get_param( 'context' ) && current_user_can( 'edit_posts' ) ) { return $args; }
+    // The search endpoint only accepts view/embed contexts; editors still need the link inserter to find everything.
+    if ( current_user_can( 'edit_posts' ) && ( 'edit' === $request->get_param( 'context' ) || 'rest_post_search_query' === current_filter() ) ) { return $args; }
     $args['post_status'] = 'publish';
     $args['has_password'] = false;
     $args['meta_query'] = array( 'relation' => 'AND', (array) ( $args['meta_query'] ?? array() ), shiki_visibility_meta_query() );
     $args['post__not_in'] = array_values( array_unique( array_merge( (array) ( $args['post__not_in'] ?? array() ), shiki_ids( shiki_option( 'page_exclude', array() ) ) ) ) );
-    $args['category__not_in'] = array_values( array_unique( array_merge( (array) ( $args['category__not_in'] ?? array() ), shiki_ids( shiki_option( 'category_exclude', array() ) ) ) ) );
+    $args['tax_query'] = shiki_hidden_category_tax_query( $args['tax_query'] ?? array(), shiki_option( 'category_exclude', array() ) );
     return $args;
 }
 add_filter( 'rest_post_query', 'shiki_rest_public_scope', 20, 2 );
@@ -159,9 +173,10 @@ add_filter( 'rest_page_query', 'shiki_rest_public_scope', 20, 2 );
 add_filter( 'rest_post_search_query', 'shiki_rest_public_scope', 20, 2 );
 
 /** A prepared fixed-policy EXISTS clause also protects core's separate comments-feed SQL. */
-function shiki_public_comment_post_sql() {
+/** $column is a fixed internal SQL column reference, never request input. */
+function shiki_public_post_exists_sql( $column ) {
     global $wpdb;
-    $sql = "EXISTS (SELECT 1 FROM {$wpdb->posts} shiki_cp WHERE shiki_cp.ID = {$wpdb->comments}.comment_post_ID AND shiki_cp.post_status = 'publish' AND shiki_cp.post_password = '' AND NOT EXISTS (SELECT 1 FROM {$wpdb->postmeta} shiki_cm WHERE shiki_cm.post_id = shiki_cp.ID AND shiki_cm.meta_key = '_shiki_exclude' AND shiki_cm.meta_value = '1')";
+    $sql = "EXISTS (SELECT 1 FROM {$wpdb->posts} shiki_cp WHERE shiki_cp.ID = {$column} AND shiki_cp.post_status = 'publish' AND shiki_cp.post_password = '' AND NOT EXISTS (SELECT 1 FROM {$wpdb->postmeta} shiki_cm WHERE shiki_cm.post_id = shiki_cp.ID AND shiki_cm.meta_key = '_shiki_exclude' AND shiki_cm.meta_value = '1')";
     $ids = shiki_ids( shiki_option( 'page_exclude', array() ) );
     if ( $ids ) { $sql .= $wpdb->prepare( ' AND shiki_cp.ID NOT IN (' . implode( ',', array_fill( 0, count( $ids ), '%d' ) ) . ')', $ids ); }
     $terms = shiki_ids( shiki_option( 'category_exclude', array() ) );
@@ -170,10 +185,28 @@ function shiki_public_comment_post_sql() {
     }
     return $sql . ')';
 }
+function shiki_public_comment_post_sql() {
+    global $wpdb;
+    return shiki_public_post_exists_sql( "{$wpdb->comments}.comment_post_ID" );
+}
 add_filter( 'comment_feed_where', static function( $where ) { return $where . ' AND ' . shiki_public_comment_post_sql(); } );
 add_filter( 'rest_comment_query', static function( $args, $request ) {
-    if ( 'edit' !== $request->get_param( 'context' ) || ! current_user_can( 'moderate_comments' ) ) { $args['shiki_public_scope'] = true; }
+    if ( 'edit' !== $request->get_param( 'context' ) || ! current_user_can( 'moderate_comments' ) ) {
+        $args['shiki_public_scope'] = true;
+        // WP_Comment_Query caches by its default vars only; a distinct post_status keeps scoped results apart from moderator results.
+        $args['post_status'] = 'publish';
+    }
     return $args;
+}, 20, 2 );
+/** Public media lists omit files attached to protected, excluded or hidden posts; unattached media stays as in core. */
+add_filter( 'rest_attachment_query', static function( $args ) {
+    if ( ! current_user_can( 'upload_files' ) ) { $args['shiki_public_parent'] = true; }
+    return $args;
+}, 20 );
+add_filter( 'posts_where', static function( $where, $query ) {
+    global $wpdb;
+    if ( $query instanceof WP_Query && $query->get( 'shiki_public_parent' ) ) { $where .= " AND ( {$wpdb->posts}.post_parent = 0 OR " . shiki_public_post_exists_sql( "{$wpdb->posts}.post_parent" ) . ' )'; }
+    return $where;
 }, 20, 2 );
 add_filter( 'comments_clauses', static function( $clauses, $query ) {
     if ( ! empty( $query->query_vars['shiki_public_scope'] ) ) { $clauses['where'] .= ' AND ' . shiki_public_comment_post_sql(); }
@@ -219,9 +252,12 @@ function shiki_validate_settings( $input, $section, $existing = null ) {
 
 function shiki_sanitize_settings( $input ) {
     if ( ! current_user_can( 'manage_options' ) ) { return get_option( 'shikipress_settings', array() ); }
+    $option_page = $_POST['option_page'] ?? null;
+    // Another settings group (such as the generic options.php screen) never writes this option.
+    if ( null !== $option_page && 'shikipress' !== $option_page ) { return get_option( 'shikipress_settings', array() ); }
     // Registered sanitizers also run for internal update_option calls. Each such
     // action validates its own nonce and payload before reaching this boundary.
-    if ( 'shikipress' !== ( $_POST['option_page'] ?? '' ) ) {
+    if ( null === $option_page ) {
         return is_array( $input ) ? array_intersect_key( $input, shiki_defaults() ) : get_option( 'shikipress_settings', array() );
     }
     $section = is_string( $_POST['shikipress_section'] ?? null ) ? sanitize_key( wp_unslash( $_POST['shikipress_section'] ) ) : '';
