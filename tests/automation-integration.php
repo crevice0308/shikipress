@@ -75,6 +75,33 @@ try {
     $token = 'automation-test-token'; $scheduled[] = [$same, $token]; update_post_meta($same, '_shiki_translation', ['state' => 'queued', 'title_hash' => hash('sha256', get_post($same)->post_title), 'token' => $token, 'attempts' => 0, 'created' => time()]);
     for ($attempt = 0; $attempt < 3; $attempt++) { do_action('shiki_translate_job', $same, $token); }
     remove_filter('pre_http_request', $failure, 10); $job = get_post_meta($same, '_shiki_translation', true); shiki_auto_test_assert($job['state'] === 'error' && $job['attempts'] === 3, 'DeepL retry limit'); do_action('shiki_translate_job', $same, $token); shiki_auto_test_assert(get_post_meta($same, '_shiki_translation', true)['attempts'] === 3, 'completed exhausted job cannot issue another request');
+    // Admin AJAX handlers run with a throwing die handler so wp_send_json() returns control to the test.
+    $ajax = static function (string $action, array $post) {
+        $_POST = $post; $_REQUEST = $post; $output = '';
+        $die = static function () { return static function () { throw new RuntimeException('shiki-ajax-done'); }; };
+        add_filter('wp_doing_ajax', '__return_true'); add_filter('wp_die_ajax_handler', $die); ob_start();
+        try { do_action('wp_ajax_' . $action); } catch (RuntimeException $done) { if ('shiki-ajax-done' !== $done->getMessage()) { throw $done; } }
+        finally { $output = (string) ob_get_clean(); remove_filter('wp_doing_ajax', '__return_true'); remove_filter('wp_die_ajax_handler', $die); $_POST = []; $_REQUEST = []; }
+        return json_decode($output, true);
+    };
+    // A finished DeepL candidate for the same saved title is reused without another billable request.
+    $draft = shiki_auto_test_post(['post_title' => 'TEST 冬の結露を防ぐ方法', 'post_status' => 'draft']);
+    update_post_meta($draft, '_shiki_translation', ['state' => 'done', 'title_hash' => hash('sha256', get_post($draft)->post_title), 'token' => 'reuse-fixture', 'attempts' => 1, 'created' => time() - 3600, 'slug' => 'prevent-window-condensation']);
+    $http_calls = 0; $count_http = static function ($pre) use (&$http_calls) { $http_calls++; return $pre; }; add_filter('pre_http_request', $count_http, 1);
+    $reply = $ajax('shiki_translate_title', ['post_id' => $draft, 'consent' => '1', 'nonce' => wp_create_nonce('shiki_automation_ajax')]);
+    remove_filter('pre_http_request', $count_http, 1); $after = get_post_meta($draft, '_shiki_translation', true);
+    shiki_auto_test_assert(!empty($reply['success']) && 'done' === ($reply['data']['state'] ?? '') && 'prevent-window-condensation' === ($reply['data']['slug'] ?? '') && 0 === $http_calls && 'reuse-fixture' === ($after['token'] ?? ''), 'finished DeepL candidate reused without a new request');
+    wp_update_post(['ID' => $draft, 'post_title' => 'TEST 春の窓を開ける']); $reply = $ajax('shiki_translate_title', ['post_id' => $draft, 'consent' => '1', 'nonce' => wp_create_nonce('shiki_automation_ajax')]);
+    $after = get_post_meta($draft, '_shiki_translation', true); if (!empty($after['token'])) { $scheduled[] = [$draft, $after['token']]; }
+    shiki_auto_test_assert(!empty($reply['success']) && 'queued' === ($reply['data']['state'] ?? '') && 'queued' === ($after['state'] ?? ''), 'a changed title still queues a new DeepL candidate');
+    // Featured priority is site-wide curation: authors cannot set or reset it; editor-level users can.
+    $author = wp_insert_user(['user_login' => 'shiki_auto_author_' . wp_generate_password(6, false), 'user_pass' => wp_generate_password(32), 'role' => 'author']);
+    $owned = shiki_auto_test_post(['post_title' => 'TEST author priority', 'post_status' => 'publish', 'post_author' => $author]); update_post_meta($owned, '_shiki_priority', 7);
+    wp_set_current_user($author); $_POST = ['shiki_editor_nonce' => wp_create_nonce('shiki_editor_' . $owned), 'shiki_priority' => '100']; do_action('save_post', $owned, get_post($owned), true);
+    shiki_auto_test_assert(7 === (int) get_post_meta($owned, '_shiki_priority', true), 'author cannot change or reset featured priority');
+    wp_set_current_user(1); $_POST = ['shiki_editor_nonce' => wp_create_nonce('shiki_editor_' . $owned), 'shiki_priority' => '100']; do_action('save_post', $owned, get_post($owned), true); $_POST = [];
+    shiki_auto_test_assert(100 === (int) get_post_meta($owned, '_shiki_priority', true), 'editor-level user sets featured priority');
+    require_once ABSPATH . 'wp-admin/includes/user.php'; wp_delete_user($author, 1);
     $settings['view_count_enabled'] = true; $settings['view_count_consent_required'] = true; update_option('shikipress_settings', $settings); wp_set_current_user(0); $blocked_request = new WP_REST_Request('POST', '/shikipress/v1/view'); $blocked_request->set_param('post_id', $visible); $blocked_request->set_header('user-agent', 'Mozilla/5.0 Test Browser'); shiki_auto_test_assert(rest_do_request($blocked_request)->get_data()['counted'] === false, 'server measurement gate without CMP confirmation'); wp_set_current_user(1);
     $settings['view_count_consent_required'] = false; $settings['view_count_consent_ack'] = true; update_option('shikipress_settings', $settings); shiki_install_views_table(); wp_set_current_user(0);
     $request = new WP_REST_Request('POST', '/shikipress/v1/view'); $request->set_param('post_id', $visible); $request->set_header('user-agent', 'Mozilla/5.0 Test Browser'); $request->set_header('origin', home_url()); $response = rest_do_request($request); shiki_auto_test_assert($response->get_status() === 200 && $response->get_data()['counted'], 'opt-in anonymous view aggregation');

@@ -23,6 +23,7 @@ Yoast、Rank Math、All in One SEO、SEOPressがある場合、テーマのhead�
 - サイト全体 `blog_public=0`、検索、404、プレビュー、添付ページ、保護・未公開・除外コンテンツはnoindex。
 - 個別 `_shiki_noindex=1` はnoindex。タグ・著者・日付アーカイブの全体noindexも設定可能。著者／日付の初期値は有効、タグの初期値は無効。
 - `_shiki_exclude=1`、`page_exclude`、`category_exclude`、保護・未公開・個別noindexはHTML／XMLサイトマップへ掲載しない。noindex自体は閲覧権限を変更しない。
+- 表示設定でホームページ／投稿ページに割り当てた固定ページは `page_exclude` の対象にしない（`_shiki_exclude`・個別noindexは従来どおり有効）。
 - `blog_public=0` のときコアXMLサイトマップを無効化する。HTMLは読者案内として公開済み情報を引き続き表示する。noindex／サイトマップ停止はアクセス制限の代替ではない。
 
 ## サイトマップ

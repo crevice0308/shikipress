@@ -7,7 +7,7 @@ if ( ! defined( 'SHIKI_TEST_FIXTURES' ) ) {
 define( 'ABSPATH', sys_get_temp_dir() . '/shiki-updater-unit-' . getmypid() . '/' );
 @mkdir( ABSPATH . 'wp-admin/includes', 0777, true );
 file_put_contents( ABSPATH . 'wp-admin/includes/file.php', '<?php' );
-define( 'MINUTE_IN_SECONDS', 60 ); define( 'HOUR_IN_SECONDS', 3600 );
+define( 'MINUTE_IN_SECONDS', 60 ); define( 'HOUR_IN_SECONDS', 3600 ); define( 'WPINC', 'wp-includes' );
 class WP_Error { public $code; public function __construct( $code, $message = '' ) { $this->code = $code; } }
 class Theme_Upgrader {}
 // Explicit parser shim for focused tests. Native integration uses the real core parser.
@@ -35,7 +35,8 @@ class WP_HTML_Tag_Processor {
 function __( $s, $domain = '' ) { return $s; }
 function is_wp_error( $x ) { return $x instanceof WP_Error; }
 function add_filter( ...$x ) {}
-function add_action( ...$x ) {}
+function add_action( $hook, $callback = null, ...$x ) { $GLOBALS['actions'][ $hook ][] = $callback; }
+function remove_action( $hook, $callback = null, ...$x ) { $GLOBALS['actions'][ $hook ] = array_values( array_filter( $GLOBALS['actions'][ $hook ] ?? array(), static function ( $registered ) use ( $callback ) { return $registered !== $callback; } ) ); }
 function apply_filters( $name, $value ) { return $value; }
 function is_multisite() { return $GLOBALS['multisite'] ?? false; }
 function get_template() { return $GLOBALS['active_template'] ?? 'shikipress'; }
@@ -43,7 +44,8 @@ function wp_json_encode( $x ) { return json_encode( $x ); }
 function wp_salt( $x ) { return 'local-test-only-fixture'; }
 function get_site_transient( $x ) { return $GLOBALS['cache'][ $x ] ?? false; }
 function set_site_transient( $x, $v, $ttl = 0 ) { $GLOBALS['cache'][ $x ] = $v; $GLOBALS['ttls'][ $x ] = $ttl; }
-function wp_parse_url( $x ) { return parse_url( $x ); }
+function delete_site_transient( $x ) { unset( $GLOBALS['cache'][ $x ] ); $GLOBALS['deleted'][] = $x; }
+function wp_parse_url( $x, $component = -1 ) { return parse_url( $x, $component ); }
 function wp_remote_retrieve_response_code( $x ) { return $x['response']['code']; }
 function wp_remote_retrieve_body( $x ) { return $x['body']; }
 function wp_remote_retrieve_header( $x, $h ) { return $x['headers'][ $h ] ?? ''; }
@@ -54,6 +56,10 @@ function is_php_version_compatible( $x ) { return version_compare( PHP_VERSION, 
 function wp_get_theme( $x ) { return new class { function get( $key ) { return $GLOBALS['installed'][ $key ]; } }; }
 function wp_safe_remote_get( $url, $args ) {
     $GLOBALS['calls'][] = array( $url, $args );
+    // Simulate a site where other code switched TLS verification off (https_ssl_verify / http_request_args).
+    $options = array( 'verify' => false, 'verifyname' => false ); $u = $url; $h = array(); $d = array(); $t = 'GET';
+    foreach ( $GLOBALS['actions']['requests-requests.before_request'] ?? array() as $callback ) { $callback( $u, $h, $d, $t, $options ); }
+    $GLOBALS['transport'][] = $options;
     $r = $GLOBALS['http'][ $url ] ?? new WP_Error( 'unexpected_request' );
     if ( ! is_wp_error( $r ) && ! empty( $args['stream'] ) ) {
         file_put_contents( $args['filename'], $r['body'] );
@@ -94,11 +100,13 @@ $offer = ShikiPress_Updater::filter_update( false, $headers, 'shikipress', array
 check( '2.0.0' === $offer['version'] && false === $offer['autoupdate'] && '6.6' === $offer['requires'], 'native response fields' );
 check( 'original' === ShikiPress_Updater::filter_update( 'original', $headers, 'other', array() ), 'other theme unchanged' );
 check( 'original' === ShikiPress_Updater::filter_update( 'original', array( 'UpdateURI' => 'https://github.com/other/theme' ), 'shikipress', array() ), 'other repository unchanged' );
-foreach ( array( '2.0.0', '3.0.0' ) as $current ) { $headers['Version'] = $current; check( false === ShikiPress_Updater::filter_update( false, $headers, 'shikipress', array() ), 'no same-version or downgrade offer' ); }
+foreach ( array( '2.0.0', '3.0.0' ) as $current ) { $headers['Version'] = $current; $same = ShikiPress_Updater::filter_update( false, $headers, 'shikipress', array() ); check( is_array( $same ) && '2.0.0' === $same['version'] && ! version_compare( $same['version'], $current, '>' ), 'same or older release is only reported for core no_update' ); }
 foreach ( $GLOBALS['calls'] as list( $url, $args ) ) {
     check( 'ShikiPress-Updater/1' === $args['user-agent'] && array() === $args['cookies'] && ! isset( $args['body'] ), 'no site identifiers or cookies' );
     check( true === $args['sslverify'] && 0 === $args['redirection'] && $args['timeout'] <= 5 && $args['limit_response_size'] <= 524289, 'bounded safe JSON transport' );
 }
+foreach ( $GLOBALS['transport'] as $options ) { check( str_ends_with( (string) $options['verify'], '/wp-includes/certificates/ca-bundle.crt' ) && true === $options['verifyname'], 'TLS verification re-asserted at the transport even when disabled elsewhere' ); }
+check( array() === ( $GLOBALS['actions']['requests-requests.before_request'] ?? array() ) && array() === ( $GLOBALS['actions']['http_api_curl'] ?? array() ), 'transport hooks are removed after each request' );
 $metadata_bad = array( array( 'schema' => '1' ), array( 'theme' => 'other' ), array( 'version' => '2.0.0-rc.1' ), array( 'version' => '02.0.0' ), array( 'package' => 'https://evil.example/zip' ), array( 'size' => 1 ), array( 'sha256' => str_repeat( '0', 64 ) ), array( 'requires' => '6.6<script>' ), array( 'requires_php' => '7.4' ), array( 'tested' => '5.0' ) );
 foreach ( $metadata_bad as $bad ) { seed( 'valid', $bad ); check( is_wp_error( ShikiPress_Updater::release() ), 'bad metadata ' . json_encode( $bad ) ); }
 foreach ( array( array( 'draft' => true ), array( 'prerelease' => true ), array( 'tag_name' => 'v2.0.0-rc.1' ), array( 'tag_name' => '2.0.0' ), array( 'html_url' => 'https://github.com/other/repo/releases/tag/v2.0.0' ) ) as $bad ) { seed( 'valid', array(), $bad ); check( is_wp_error( ShikiPress_Updater::release() ), 'bad release ' . json_encode( $bad ) ); }
@@ -121,6 +129,8 @@ $data = seed(); check( 'keep' === ShikiPress_Updater::pre_download( 'keep', 'fil
 check( 'keep' === ShikiPress_Updater::pre_download( 'keep', $data['package'], new stdClass(), $normal ), 'other upgrader untouched' );
 check( 'keep' === ShikiPress_Updater::pre_download( 'keep', $data['package'], new Theme_Upgrader(), array( 'theme' => 'other' ) ), 'other theme untouched' );
 check( is_wp_error( ShikiPress_Updater::pre_download( false, 'https://evil.example/zip', new Theme_Upgrader(), $normal ) ), 'wrong package fails closed' );
+$data = seed(); $GLOBALS['cache']['update_themes'] = 'stale offer'; $stale = ShikiPress_Updater::pre_download( false, ShikiPress_Updater::URI . '/releases/download/v1.5.0/shikipress-1.5.0.zip', new Theme_Upgrader(), $normal );
+check( is_wp_error( $stale ) && 'shikipress_package_mismatch' === $stale->code && ! isset( $GLOBALS['cache']['update_themes'] ) && 2 === count( $GLOBALS['calls'] ), 'stale official offer refreshes core update data without downloading' );
 $data = seed(); $GLOBALS['installed']['Version'] = '3.0.0'; check( is_wp_error( ShikiPress_Updater::pre_download( false, $data['package'], new Theme_Upgrader(), $normal ) ), 'install cannot downgrade' );
 foreach ( array( array( 'requires' => '99.0', 'tested' => '99.0' ), array( 'requires_php' => '99.0' ) ) as $future ) { $data = seed( 'valid', $future ); check( is_wp_error( ShikiPress_Updater::pre_download( false, $data['package'], new Theme_Upgrader(), $normal ) ) && 2 === count( $GLOBALS['calls'] ), 'incompatible runtime blocks ZIP fetch' ); }
 $data = seed(); $GLOBALS['http'][ $data['package'] ]['body'] .= 'tampered'; check( is_wp_error( ShikiPress_Updater::pre_download( false, $data['package'], new Theme_Upgrader(), $normal ) ) && array() === glob( ABSPATH . 'download-*' ), 'corrupt ZIP rejected and temp removed' );

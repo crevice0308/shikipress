@@ -28,10 +28,12 @@ final class ShikiPress_Updater {
         }
         $release = self::release();
         $current = $theme_data['Version'] ?? '';
-        if ( is_wp_error( $release ) || ! self::version( $current ) ||
-            ! version_compare( $release['version'], $current, '>' ) ) {
+        if ( is_wp_error( $release ) || ! self::version( $current ) ) {
             return false;
         }
+        // An equal or older verified release is still returned: core files it under
+        // no_update, which keeps the native auto-update switch available. core and
+        // pre_download() both install only strictly newer versions.
         // Keep requirements visible in WordPress's native update UI. Both core
         // and pre_download() block installation on incompatible hosts.
         return array(
@@ -200,7 +202,32 @@ final class ShikiPress_Updater {
                 $args['stream'] = true;
                 $args['filename'] = $filename;
             }
-            $response = wp_safe_remote_get( $url, $args );
+            // Other code may switch TLS verification off site-wide (http_request_args,
+            // https_ssl_verify, http_api_curl). Re-assert it at the transport for this
+            // host only: GitHub's TLS is the trust anchor for the release digests.
+            $host = strtolower( (string) $parts['host'] );
+            $tls_request = static function ( &$request_url, &$headers, &$data, &$type, &$options ) use ( $host ) {
+                if ( is_string( $request_url ) && strtolower( (string) wp_parse_url( $request_url, PHP_URL_HOST ) ) === $host ) {
+                    if ( ! is_string( $options['verify'] ?? null ) || '' === $options['verify'] ) {
+                        $options['verify'] = ABSPATH . WPINC . '/certificates/ca-bundle.crt';
+                    }
+                    $options['verifyname'] = true;
+                }
+            };
+            $tls_curl = static function ( $handle, $request_args, $request_url ) use ( $url ) {
+                if ( $request_url === $url ) {
+                    curl_setopt( $handle, CURLOPT_SSL_VERIFYPEER, true );
+                    curl_setopt( $handle, CURLOPT_SSL_VERIFYHOST, 2 );
+                }
+            };
+            add_action( 'requests-requests.before_request', $tls_request, PHP_INT_MAX, 5 );
+            add_action( 'http_api_curl', $tls_curl, PHP_INT_MAX, 3 );
+            try {
+                $response = wp_safe_remote_get( $url, $args );
+            } finally {
+                remove_action( 'requests-requests.before_request', $tls_request, PHP_INT_MAX );
+                remove_action( 'http_api_curl', $tls_curl, PHP_INT_MAX );
+            }
             if ( is_wp_error( $response ) ) {
                 return self::error( 'http_failed' );
             }
@@ -335,6 +362,18 @@ final class ShikiPress_Updater {
         }
         if ( ! is_string( $package ) || $data['package'] !== $package ||
             ! version_compare( $data['version'], $installed->get( 'Version' ), '>' ) ) {
+            if ( version_compare( $data['version'], $installed->get( 'Version' ), '>' ) ) {
+                // Core keeps a failed offer until its next check; drop it so the next
+                // attempt is offered the freshly verified release instead.
+                delete_site_transient( 'update_themes' );
+                if ( is_string( $package ) && 1 === preg_match( '~^' . preg_quote( self::URI, '~' ) . '/releases/download/v((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))/shikipress-\1\.zip$~D', $package, $offered ) &&
+                    version_compare( $offered[1], $data['version'], '<' ) ) {
+                    return new WP_Error( 'shikipress_package_mismatch', sprintf(
+                        /* translators: %s: latest verified version. */
+                        __( 'ShikiPress %s が新しく公開されたため、更新情報を取り直しました。画面を再読み込みしてから、もう一度更新してください。', 'shikipress' ),
+                        $data['version'] ) );
+                }
+            }
             return self::error( 'package_mismatch' );
         }
         if ( ! is_wp_version_compatible( $data['requires'] ) || ! is_php_version_compatible( $data['requires_php'] ) ) {
