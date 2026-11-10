@@ -60,6 +60,24 @@ for suite in core frontend seo ads public-scope automation tools lifecycle media
   wp_ci eval-file "$root/tests/$suite-integration.php" | tee "$reports/$suite.txt"
   echo "::endgroup::"
 done
+# Server-rendered sweep: every template, feed, sitemap, public REST list and theme admin screen over loopback HTTP.
+private="$state/private"
+mkdir -m 700 "$private"
+wp_ci eval-file "$root/tests/theme-suites/render-setup.php" "$private/render.json"
+php -d memory_limit=512M -S 127.0.0.1:8080 -t "$wp_root" "$root/tests/plugins/router.php" > "$reports/server.log" 2>&1 &
+server_pid=$!
+trap 'kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true' EXIT
+for attempt in {1..30}; do
+  kill -0 "$server_pid" 2>/dev/null || { cat "$reports/server.log"; exit 1; }
+  if curl --silent --fail --max-time 5 http://127.0.0.1:8080/ > /dev/null; then break; fi
+  sleep 1
+done
+echo "::group::render sweep"
+sweep=0
+python3 "$root/tests/theme-suites/check-render.py" "$private/render.json" "$reports" || sweep=$?
+echo "::endgroup::"
+rm -f "$private/render.json" # The one-hour administrator session of the disposable site is not kept.
+[[ "$sweep" == 0 ]] || { echo 'Render sweep failed'; tail -n 40 "$reports/server.log"; exit 1; }
 php -v | head -1
 wp_ci core version
 wp_ci eval 'echo "Theme ".SHIKI_VERSION." / DB ".$GLOBALS["wpdb"]->db_version()."\n";'

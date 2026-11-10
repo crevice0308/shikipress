@@ -41,6 +41,8 @@ jobs:
           php -l tests/save-hooks/unit.php
           php tests/save-hooks/unit.php
           bash -n tests/theme-suites/run-ci.sh
+          php -l tests/theme-suites/render-setup.php
+          python3 -m py_compile tests/theme-suites/check-render.py
           find tests -maxdepth 1 -type f -name '*-integration.php' -print0 | xargs -0 -n1 php -l
           find tests/automation-jobs -type f -name '*.php' -print0 | xargs -0 -n1 php -l
           for scenario in $(php tests/automation-jobs/unit.php --list); do
