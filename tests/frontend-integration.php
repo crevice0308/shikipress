@@ -68,6 +68,16 @@ try {
     shiki_front_assert(!str_contains($excerpt,'この記事の目次')&&str_contains($excerpt,'TEST toc body'),'Automatic excerpt does not start with the table of contents');
     $GLOBALS['post']=get_post($toc_other);setup_postdata($GLOBALS['post']);$embedded=apply_filters('the_content',$GLOBALS['post']->post_content);wp_reset_postdata();
     shiki_front_assert(!str_contains($embedded,'article-toc')&&!str_contains($embedded,'shiki-heading-'),'Another post rendered inside the article gets no table of contents or repeated anchors');
+    // Core's password form: since WordPress 6.8 it starts with a hidden field, after which wpautop() must not leave a stray </p>.
+    $paragraphs_balanced=static function($html){return preg_match_all('~<p[\s>]~',$html)===substr_count($html,'</p>');};
+    $hidden_field='<input type="hidden" name="redirect_to" value="https://example.invalid/protected/" />';
+    $modern_form='<form action="https://example.invalid/wp-login.php?action=postpass" class="post-password-form" method="post">'.$hidden_field."\n\t".'<p>TEST protected.</p>'."\n\t".'<p><label for="pwbox-1">Password: <input name="post_password" id="pwbox-1" type="password" spellcheck="false" required size="20" /></label> <input type="submit" name="Submit" value="Enter" /></p></form>'."\n\t";
+    $modern=wpautop(apply_filters('the_password_form',$modern_form,get_post($password),''));
+    shiki_front_assert($paragraphs_balanced($modern)&&1===substr_count($modern,$hidden_field)&&1===substr_count($modern,'name="post_password"')&&1===substr_count($modern,'type="submit"')&&1===substr_count($modern,'</form>'),'Password form with a leading hidden field keeps balanced paragraphs and every field');
+    $legacy_form=str_replace($hidden_field,'',$modern_form);
+    shiki_front_assert($legacy_form===apply_filters('the_password_form',$legacy_form,get_post($password),''),'Password form without leading hidden fields is returned unchanged');
+    $core_form=wpautop(get_the_password_form(get_post($password)));
+    shiki_front_assert($paragraphs_balanced($core_form)&&str_contains($core_form,'action=postpass')&&1===substr_count($core_form,'name="post_password"')&&substr_count($core_form,'<form')===substr_count($core_form,'</form>'),'Password form of the running WordPress stays balanced after wpautop');
     // A menu location that points at a deleted menu must not fall back to core's page list, which ignores exclusions.
     $old_locations=get_theme_mod('nav_menu_locations');$menu_page=wp_insert_post(['post_type'=>'page','post_status'=>'publish','post_title'=>'TEST frontend menu fallback hidden']);$created[]=$menu_page;
     update_option('shikipress_settings',array_merge(get_option('shikipress_settings'),['page_exclude'=>[$menu_page]]));set_theme_mod('nav_menu_locations',array_merge((array)$old_locations,['primary'=>999999,'footer'=>999999]));

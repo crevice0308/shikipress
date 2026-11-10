@@ -29,6 +29,13 @@ class LocalRedirects(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+class NoRedirects(urllib.request.HTTPRedirectHandler):
+    """Hands a redirect response back to the caller, so its Location and cookies can be read."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 # End tags HTML allows authors to omit; an open one is closed silently by its container.
 OPTIONAL_END = {'p', 'li', 'dt', 'dd', 'tr', 'td', 'th', 'thead', 'tbody', 'tfoot', 'colgroup', 'caption', 'option', 'optgroup', 'rp', 'rt', 'html', 'head', 'body'}
 
@@ -41,9 +48,16 @@ class Page(HTMLParser):
         self.tags, self.comments, self.h1, self.unbalanced = [], [], [], []
         self._in_h1 = False
         self._open = []
+        self._lines = text.split('\n')
         self.feed(text)
         self.close()
         self.unbalanced += [f'<{tag}> never closed' for tag in self._open if tag not in OPTIONAL_END]
+
+    def _where(self):
+        """The source around the current tag, so a report names the markup and not only the tag."""
+        line, column = self.getpos()
+        source = self._lines[line - 1] if 0 < line <= len(self._lines) else ''
+        return f' (line {line}: {source[max(0, column - 140):column + 40].strip()})'
 
     def handle_starttag(self, tag, attrs):
         self.tags.append((tag, dict(attrs)))
@@ -59,14 +73,14 @@ class Page(HTMLParser):
         if tag in VOID:
             return
         if tag not in self._open:
-            self.unbalanced.append(f'</{tag}> without an open element')
+            self.unbalanced.append(f'</{tag}> without an open element' + self._where())
             return
         while self._open:
             current = self._open.pop()
             if current == tag:
                 break
             if current not in OPTIONAL_END:
-                self.unbalanced.append(f'<{current}> still open at </{tag}>')
+                self.unbalanced.append(f'<{current}> still open at </{tag}>' + self._where())
 
     def handle_data(self, data):
         if self._in_h1 and self.h1:
@@ -86,9 +100,13 @@ class Page(HTMLParser):
         return {name for _, a in self.tags for name in (a.get('class') or '').split()}
 
 
-def fetch(opener, url, cookies=None):
+def fetch(opener, url, cookies=None, referer=None, form=None):
     assert_local(url)
-    request = urllib.request.Request(url, headers={'User-Agent': 'ShikiPress-RenderSweep/1 (local CI)', 'Accept': '*/*'})
+    request = urllib.request.Request(url, headers={'User-Agent': 'ShikiPress-RenderSweep/1 (local CI)', 'Accept': '*/*'},
+                                     data=urllib.parse.urlencode(form).encode() if form is not None else None)
+    if referer:
+        assert_local(referer)
+        request.add_header('Referer', referer)
     if cookies:
         request.add_header('Cookie', '; '.join(f'{name}={urllib.parse.quote(value, safe="")}' for name, value in cookies.items()))
     try:
@@ -106,6 +124,10 @@ OWN_SECRETS = {
     'single-password': ['SECRET_TEST_PASSWORD', 'secret-test-password'],
     'single-excluded': ['SECRET_TEST_EXCLUDED', 'SECRET_TEST_BODY_EXCLUDED', 'secret-test-excluded'],
     'page-password': ['SECRET_TEST_PAGE_PASSWORD', 'secret-test-page-password'],
+    'single-password-wrong': ['SECRET_TEST_PASSWORD', 'secret-test-password'],
+    'page-password-wrong': ['SECRET_TEST_PAGE_PASSWORD', 'secret-test-page-password'],
+    'single-password-unlocked': ['SECRET_TEST_BODY_PASSWORD', 'SECRET_TEST_PASSWORD', 'secret-test-password'],
+    'page-password-unlocked': ['SECRET_TEST_PAGE_BODY', 'SECRET_TEST_PAGE_PASSWORD', 'secret-test-page-password'],
 }
 
 
@@ -113,6 +135,42 @@ def leaks(name, text):
     for own in OWN_SECRETS.get(name, []):
         text = text.replace(own, '')
     return sorted(set(re.findall(r'secret[_-]test[A-Za-z0-9_-]*', text, re.I)))[:8]
+
+
+def password_form(text):
+    """The post password form of a page: its action, method and named fields, or None."""
+    match = re.search(r'<form\b[^>]*\bpost-password-form\b[^>]*>.*?</form>', text, re.S)
+    if not match:
+        return None
+    part = Page(match.group(0))
+    form = next((a for tag, a in part.tags if tag == 'form'), {})
+    return {'action': form.get('action') or '', 'method': (form.get('method') or '').lower(),
+            'fields': [(a['name'], (a.get('type') or '').lower(), a.get('value') or '') for tag, a in part.tags if tag == 'input' and a.get('name')]}
+
+
+def submit_password(opener, url, password):
+    """Submits the page's own password form as a reader would and returns the page that reader then sees.
+
+    Loopback only. The cookie is the one WordPress sets for the submitted password, right or wrong.
+    """
+    locked = fetch(opener, url)
+    form = password_form(locked['text'])
+    flow = {'password_form_found': bool(form)}
+    if not form:
+        return locked, flow
+    fields = {name: value for name, kind, value in form['fields'] if kind == 'hidden'}
+    fields.update({'post_password': password, 'Submit': 'Enter'})
+    quiet = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirects())
+    answer = fetch(quiet, urllib.parse.urljoin(url, form['action']), referer=url, form=fields)
+    location = answer['headers'].get('Location') or ''
+    cookies = {}
+    for item in answer['headers'].get_all('Set-Cookie') or []:
+        cookie_name, _, rest = item.partition('=')
+        if cookie_name.strip().startswith('wp-postpass_'):
+            cookies[cookie_name.strip()] = urllib.parse.unquote(rest.split(';', 1)[0])
+    flow['submission_returns_to_the_post'] = answer['status'] in (302, 303) and urllib.parse.urlsplit(urllib.parse.urljoin(url, location)).path == urllib.parse.urlsplit(url).path
+    flow['reader_cookie_set'] = len(cookies) == 1
+    return fetch(opener, url, cookies, referer=url), flow
 
 
 def theme_page(name, result, expect):
@@ -183,9 +241,20 @@ def theme_page(name, result, expect):
         checks['no_marker_left'] = 'data-shiki-ad-mark' not in text
     if name == 'single-classic-page2':
         checks['second_page_body'] = 'TEST 二ページ目の見出しA' in text and 'TEST クラシック見出しA' not in text
-    if name in ('single-password', 'page-password'):
+    if name in ('single-password', 'page-password', 'single-password-wrong', 'page-password-wrong'):
+        form = password_form(text)
         checks['password_form_only'] = 'post-password-form' in classes and 'article-toc' not in classes and ads == 0
+        # The form posts to core's handler, and every field core put into it is still inside it.
+        checks['password_form_fields'] = (bool(form) and form['method'] == 'post' and 'action=postpass' in form['action']
+                                          and urllib.parse.urlsplit(form['action']).path.endswith('/wp-login.php')
+                                          and [kind for field, kind, _ in form['fields'] if field == 'post_password'] == ['password']
+                                          and text.count('name="redirect_to"') == sum(1 for field, _, _ in form['fields'] if field == 'redirect_to'))
         checks['protected_noindex'] = 'noindex' in robots
+        detail['password_form'] = form
+    if name in ('single-password-unlocked', 'page-password-unlocked'):
+        body = expect['protected'][name.replace('-unlocked', '')]['body']
+        checks['protected_body_shown'] = body in text and 'post-password-form' not in classes
+        checks['protected_stays_noindex_without_ads'] = 'noindex' in robots and ads == 0
     if name == 'single-excluded':
         checks['excluded_noindex'] = 'noindex' in robots
     if name == 'page-child':
@@ -250,6 +319,18 @@ def run(private_file, reports):
         results.append({'case': name, 'url': url, 'status': result['status'], 'bytes': result['bytes'], 'checks': checks,
                         'pass': all(checks.values()), **({'outline': outline} if outline else {}),
                         **({'detail': detail} if not all(checks.values()) else {})})
+    # A reader submits the password form: a wrong password keeps the body hidden, the right one shows it.
+    for base, protected in expect.get('protected', {}).items():
+        for label, password in (('wrong', protected['password'] + '-wrong'), ('unlocked', protected['password'])):
+            name = f'{base}-{label}'
+            result, flow = submit_password(opener, data['public'][base], password)
+            checks, detail = theme_page(name, result, expect)
+            checks.update(flow)
+            (pages / f'{name}.html').write_text(result['text'])
+            outline = detail.pop('outline', None)
+            results.append({'case': name, 'url': data['public'][base], 'status': result['status'], 'bytes': result['bytes'], 'checks': checks,
+                            'pass': all(checks.values()), **({'outline': outline} if outline else {}),
+                            **({'detail': detail} if not all(checks.values()) else {})})
     for name, url in data['admin'].items():
         result = fetch(opener, url, data['cookies'])
         text = result['text']

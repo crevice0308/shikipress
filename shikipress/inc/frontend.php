@@ -235,6 +235,18 @@ add_filter('the_content', function ($content) {
     return $content;
 }, 12);
 
+/**
+ * Core's password form is complete markup. Since WordPress 6.8 it begins with a hidden
+ * field, after which wpautop() leaves a stray </p> inside the form. Group the leading
+ * hidden fields in a block element so the paragraphs stay balanced. The fields, their
+ * values and the rest of the form are untouched; an unrecognised form is returned as is.
+ */
+add_filter('the_password_form', function ($form) {
+    if (!is_string($form) || '' === $form) { return $form; }
+    $grouped = preg_replace('~(<form\b[^>]*>)((?:\s*<input\b[^>]*\btype=(["\'])hidden\3[^>]*>)+)~i', '$1<div hidden>$2</div>', $form, 1);
+    return is_string($grouped) ? $grouped : $form;
+}, 20);
+
 add_filter('wp_nav_menu_objects', function ($items) {
     $public_page_ids = array_map(function ($page) { return $page->ID; }, shiki_public_pages());
     $visible_category_ids = array_map(function ($row) { return (int) $row['term']->term_id; }, shiki_visible_categories());

@@ -213,6 +213,11 @@ $written = file_put_contents( $target, wp_json_encode( array(
 		'child_parent_title' => get_the_title( $pages['about'] ),
 		'event_label' => 'TEST 通年イベント',
 		'preview_season' => $preview_season,
+		// The fixtures' own password and body, for the reader's unlock flow.
+		'protected' => array(
+			'single-password' => array( 'password' => (string) get_post( $hidden['password'] )->post_password, 'body' => 'SECRET_TEST_BODY_PASSWORD' ),
+			'page-password' => array( 'password' => (string) get_post( $hidden['page_password'] )->post_password, 'body' => 'SECRET_TEST_PAGE_BODY' ),
+		),
 	),
 ), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT ) );
 if ( ! $written ) { throw new RuntimeException( 'Could not write the URL map.' ); }
