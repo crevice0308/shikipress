@@ -14,7 +14,9 @@ After the suites, `render-setup.php` seeds a representative scenario (menus, com
 - feeds, core XML sitemaps, `robots.txt` and the public REST lists;
 - as a signed-in administrator: all ShikiPress settings tabs, the post/page/category editors, and the nonce-protected season preview.
 
-Each theme page must return the expected status with one `<title>`, one `<h1>`, the theme header/footer/main, unique `id` values, resolving in-page links, `aria-*` references and label targets, and no trace of the hidden fixtures (drafts, private, scheduled, protected or excluded content) outside their own page. Scenario-specific checks cover the table of contents, ad slots, breadcrumbs, noindex rules and escaping. This reads server output only; it runs no JavaScript.
+Each theme page must return the expected status with one `<title>`, one `<h1>`, the theme header/footer/main, unique `id` values, resolving in-page links, `aria-*` references and label targets, balanced element nesting (no end tag without its start tag, nothing left open when its container closes; end tags HTML lets authors omit are tolerated), and no trace of the hidden fixtures (drafts, private, scheduled, protected or excluded content) outside their own page. Scenario-specific checks cover the table of contents, ad slots, breadcrumbs, noindex rules and escaping. Each result line prints a short outline of the page (title, headings, canonical, robots, description, card and ad counts). This reads server output only; it runs no JavaScript.
+
+For the password-protected article and page, the sweep also submits the page's own form as a reader would, with the fixtures' password: a wrong password must keep the body hidden, the right one must show it, and the page stays `noindex` without ads either way.
 
 Safety:
 

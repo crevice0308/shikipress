@@ -1,5 +1,5 @@
 <?php
-/** ShikiPress Ultimate bootstrap. Modified 2026-11-06 for 1.1.7. */
+/** ShikiPress Ultimate bootstrap. Modified 2026-11-10 for 1.1.7. */
 defined( 'ABSPATH' ) || exit;
 define( 'SHIKI_VERSION', '1.1.7' );
 define( 'SHIKI_DIR', get_template_directory() );
