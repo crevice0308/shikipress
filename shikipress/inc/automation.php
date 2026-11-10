@@ -190,14 +190,18 @@ function shiki_adopt_slug(int $post_id, string $candidate, bool $explicit = fals
     update_post_meta($post_id, '_shiki_auto_slug', $slug);
     return $slug;
 }
-add_action('transition_post_status', function ($new, $old, $post): void {
-    if ($new === 'publish' || $old === 'publish') { update_post_meta($post->ID, '_shiki_ever_published', 1); }
+add_action('transition_post_status', function ($new, $old, $post = null): void {
+    if ($post instanceof WP_Post && ($new === 'publish' || $old === 'publish')) { update_post_meta($post->ID, '_shiki_ever_published', 1); }
 }, 10, 3);
-add_action('save_post', function (int $post_id, WP_Post $post, bool $update): void {
-    if (!$update && !wp_is_post_revision($post_id) && in_array($post->post_status, ['auto-draft', 'draft'], true) && in_array($post->post_type, ['post', 'page'], true)) { update_post_meta($post_id, '_shiki_new_theme_draft', 1); }
+// Plugins sometimes fire save_post with fewer or untyped arguments; the handlers below
+// accept that instead of failing the save. Only core's explicit $update === false is a new post.
+add_action('save_post', function ($post_id = 0, $post = null, $update = true): void {
+    $post = shiki_saved_post($post_id, $post); if (!$post) { return; } $post_id = (int) $post->ID;
+    if (false === $update && !wp_is_post_revision($post_id) && in_array($post->post_status, ['auto-draft', 'draft'], true) && in_array($post->post_type, ['post', 'page'], true)) { update_post_meta($post_id, '_shiki_new_theme_draft', 1); }
 }, 5, 3);
-add_action('save_post', function (int $post_id, WP_Post $post, bool $update): void {
+add_action('save_post', function ($post_id = 0, $post = null): void {
     static $busy = false;
+    $post = shiki_saved_post($post_id, $post); if (!$post) { return; } $post_id = (int) $post->ID;
     if ($busy || wp_is_post_revision($post_id) || wp_is_post_autosave($post_id) || !in_array($post->post_type, ['post', 'page'], true) || $post->post_status === 'auto-draft') { return; }
     if (!get_post_meta($post_id, '_shiki_draft_seen', true)) {
         update_post_meta($post_id, '_shiki_draft_seen', 1);
@@ -214,7 +218,7 @@ add_action('save_post', function (int $post_id, WP_Post $post, bool $update): vo
         }
         $busy = false;
     }
-}, 20, 3);
+}, 20, 2);
 add_action('add_meta_boxes', function (): void {
     foreach (['post', 'page'] as $type) { add_meta_box('shiki-automation', '季節のしおり・記事自動化', 'shiki_automation_metabox', $type, 'normal', 'default'); }
 });
@@ -246,8 +250,9 @@ function shiki_automation_metabox(WP_Post $post): void {
     } else { echo '<p>公開済み・公開履歴のある記事のURLは、この機能では変更しません。</p>'; }
     echo '<p><label><input type="checkbox" name="shiki_slug_lock" value="1" ' . checked((bool) get_post_meta($post->ID, '_shiki_slug_lock', true), true, false) . '> スラッグを手動固定（自動適用を停止）</label></p><p id="shiki-automation-status" role="status" aria-live="polite"></p>';
 }
-add_action('save_post', function (int $post_id, WP_Post $post): void {
+add_action('save_post', function ($post_id = 0, $post = null): void {
     static $busy = false;
+    $post = shiki_saved_post($post_id, $post); if (!$post) { return; } $post_id = (int) $post->ID;
     if ($busy || empty($_POST['shiki_editor_nonce']) || !wp_verify_nonce(sanitize_text_field(wp_unslash($_POST['shiki_editor_nonce'])), 'shiki_editor_' . $post_id) || !current_user_can('edit_post', $post_id) || wp_is_post_revision($post_id) || wp_is_post_autosave($post_id)) { return; }
     $busy = true;
     update_post_meta($post_id, '_shiki_classification_lock', !empty($_POST['shiki_classification_lock']) ? 1 : 0);

@@ -57,6 +57,17 @@ try {
     ob_start();shiki_page_links();$page_links=ob_get_clean();shiki_front_assert(str_contains($page_links,'additional-pages') && str_contains($page_links,'その他の固定ページ'), 'Many public pages use native accessible details disclosure');
     shiki_front_assert(!str_contains($page_links,'TEST frontend private') && !str_contains($page_links,'TEST frontend password') && !str_contains($page_links,'TEST frontend excluded'), 'Expanded page groups keep all private/password/excluded pages out');
     $hidden_settings=shiki_validate_settings(['hero_title'=>'<script>x</script>見出し','toc_enabled'=>1],'design',$old_settings); shiki_front_assert(!str_contains($hidden_settings['hero_title'],'<'), 'Hero title sanitizes markup');
+    // The table of contents belongs to the queried post's own body: never to an automatic excerpt or to another post rendered inside it.
+    $toc_body="<h2>TEST 目次の見出しA</h2>\n\nTEST toc body\n\n<h2>TEST 目次の見出しB</h2>\n\nTEST toc more";
+    $toc_post=wp_insert_post(['post_status'=>'publish','post_title'=>'TEST frontend toc','post_content'=>$toc_body]);$created[]=$toc_post;
+    $toc_other=wp_insert_post(['post_status'=>'publish','post_title'=>'TEST frontend toc embedded','post_content'=>$toc_body]);$created[]=$toc_other;
+    $query=new WP_Query();$GLOBALS['wp_the_query']=$query;$GLOBALS['wp_query']=$query;$query->query(['p'=>$toc_post]);$query->the_post();
+    $own=apply_filters('the_content',get_post($toc_post)->post_content);
+    shiki_front_assert(str_contains($own,'article-toc')&&str_contains($own,'id="shiki-heading-1"'),'Queried post body gets the table of contents');
+    $excerpt=apply_filters('get_the_excerpt','',get_post($toc_post));
+    shiki_front_assert(!str_contains($excerpt,'この記事の目次')&&str_contains($excerpt,'TEST toc body'),'Automatic excerpt does not start with the table of contents');
+    $GLOBALS['post']=get_post($toc_other);setup_postdata($GLOBALS['post']);$embedded=apply_filters('the_content',$GLOBALS['post']->post_content);wp_reset_postdata();
+    shiki_front_assert(!str_contains($embedded,'article-toc')&&!str_contains($embedded,'shiki-heading-'),'Another post rendered inside the article gets no table of contents or repeated anchors');
     // A menu location that points at a deleted menu must not fall back to core's page list, which ignores exclusions.
     $old_locations=get_theme_mod('nav_menu_locations');$menu_page=wp_insert_post(['post_type'=>'page','post_status'=>'publish','post_title'=>'TEST frontend menu fallback hidden']);$created[]=$menu_page;
     update_option('shikipress_settings',array_merge(get_option('shikipress_settings'),['page_exclude'=>[$menu_page]]));set_theme_mod('nav_menu_locations',array_merge((array)$old_locations,['primary'=>999999,'footer'=>999999]));

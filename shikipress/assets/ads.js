@@ -1,6 +1,9 @@
 (function () {
   'use strict';
-  const cfg = window.shikiAdsConfig || {live: false};
+  // Accept only the theme's inline object literal. If that script is missing (for example
+  // blocked by a content security policy), an element named by page content is not a configuration.
+  const provided = window.shikiAdsConfig;
+  const cfg = provided && Object.getPrototypeOf(provided) === Object.prototype ? provided : {live: false};
   const loaders = new Map();
   let tcData = null;
   let listenerInstalled = false;

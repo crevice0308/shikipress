@@ -32,7 +32,9 @@ function shiki_setup() {
     add_image_size( 'shiki-card-small', 380, 260, true );
     add_image_size( 'shiki-hero', 1440, 900, true );
     register_nav_menus( array( 'primary' => __( '上部メニュー', 'shikipress' ), 'footer' => __( 'フッターメニュー', 'shikipress' ) ) );
-    register_sidebar( array( 'name' => __( '記事サイドバー', 'shikipress' ), 'id' => 'shiki-sidebar', 'before_widget' => '<section class="shiki-widget">', 'after_widget' => '</section>', 'before_title' => '<h2>', 'after_title' => '</h2>' ) );
+    // The article templates render a fixed note and the sidebar ad slot only. Keep the
+    // area registered so existing placements are retained, and say so in the admin.
+    register_sidebar( array( 'name' => __( '記事サイドバー', 'shikipress' ), 'id' => 'shiki-sidebar', 'description' => __( '現在のデザインでは、ここに置いたウィジェットは公開画面に表示されません（配置内容は保持されます）。', 'shikipress' ), 'before_widget' => '<section class="shiki-widget">', 'after_widget' => '</section>', 'before_title' => '<h2>', 'after_title' => '</h2>' ) );
 }
 add_action( 'after_setup_theme', 'shiki_setup' );
 
@@ -67,7 +69,22 @@ function shiki_invalidate_cache() {
     wp_cache_set_comments_last_changed();
     do_action( 'shiki_cache_invalidated' );
 }
-add_action( 'save_post', 'shiki_invalidate_cache', 90, 0 );
+/**
+ * Other code may fire save_post with fewer or loosely typed arguments. Resolve
+ * the saved post without ever turning such a call into a fatal error.
+ */
+function shiki_saved_post( $post_id = 0, $post = null ) {
+    if ( $post instanceof WP_Post ) { return $post; }
+    $id = is_scalar( $post_id ) ? absint( $post_id ) : 0;
+    $post = $id ? get_post( $id ) : null; // get_post( 0 ) would return the global post.
+    return $post instanceof WP_Post ? $post : null;
+}
+// Revisions and autosaves never change public output; purging on each of them
+// would empty the caches about once a minute while an editor is typing.
+add_action( 'save_post', static function ( $post_id = 0 ) {
+    $id = is_scalar( $post_id ) ? absint( $post_id ) : 0;
+    if ( ! $id || ! wp_is_post_revision( $id ) ) { shiki_invalidate_cache(); }
+}, 90, 1 );
 add_action( 'deleted_post', 'shiki_invalidate_cache', 10, 0 );
 add_action( 'set_object_terms', 'shiki_invalidate_cache', 10, 0 );
 add_action( 'edited_term', 'shiki_invalidate_cache', 10, 0 );

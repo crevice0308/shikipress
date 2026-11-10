@@ -228,7 +228,10 @@ function shiki_toc($content) {
     return $toc . '</ol></details>' . $content;
 }
 add_filter('the_content', function ($content) {
-    if (!is_admin() && is_singular() && in_the_loop() && is_main_query() && !post_password_required()) { return shiki_toc($content); }
+    // Only the queried post's own body: never an automatic excerpt (which would start with
+    // the list of headings) or another post rendered inside it (which would repeat anchor IDs).
+    if (!is_admin() && is_singular() && in_the_loop() && is_main_query() && !post_password_required()
+        && !doing_filter('get_the_excerpt') && (int) get_the_ID() === (int) get_queried_object_id()) { return shiki_toc($content); }
     return $content;
 }, 12);
 

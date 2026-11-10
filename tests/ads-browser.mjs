@@ -6,7 +6,10 @@ const require=createRequire(import.meta.url); const {chromium}=require('playwrig
 const root=path.resolve(path.dirname(new URL(import.meta.url).pathname),'..');
 const js=fs.readFileSync(path.join(root,'shikipress/assets/ads.js'),'utf8');
 const css=fs.readFileSync(path.join(root,'shikipress/assets/ads.css'),'utf8');
-const browser=await chromium.launch({headless:true,executablePath:process.env.SHIKI_CHROME_BIN||process.env.SHIKI_CHROMIUM||chromium.executablePath(),args:['--no-sandbox','--no-zygote','--single-process']});
+// Normal runs use the pinned Playwright browser. An explicitly selected headless-shell binary
+// (restricted environments) also gets the single-process flags, as in tests/layout.
+const selectedBrowser=process.env.SHIKI_CHROME_BIN||process.env.SHIKI_CHROMIUM||'';
+const browser=await chromium.launch({headless:true,executablePath:selectedBrowser||chromium.executablePath(),args:selectedBrowser?['--no-sandbox','--no-zygote','--single-process']:[]});
 const context=await browser.newContext();
 // Keep one browser context alive: single-process headless shell cannot recreate disposed contexts reliably.
 await context.newPage();
@@ -80,6 +83,16 @@ try{
   await test.page.evaluate(granted=>window.fixtureConsentCallback({...granted,eventStatus:'useractioncomplete',purpose:{consents:{1:false,3:false,4:false}}},true),granted);
   await test.page.waitForFunction(()=>window.fixtureNoReload!==true);
   assert(true,'withdrawn consent after the dialog still reloads to remove the provider runtime');await test.page.close();
+  // Without the theme's inline configuration (for example blocked by a content security policy),
+  // elements that page content names "shikiAdsConfig" must never act as the configuration.
+  {
+    const page=await context.newPage();const errors=[];page.on('pageerror',error=>errors.push(error.message));
+    await page.route('**/*',async route=>{providerRequests++;await route.abort();});
+    await page.setContent('<a id="shikiAdsConfig"></a><a id="shikiAdsConfig" name="live" href="#"></a><a id="shikiAdsConfig" name="auto" href="#"></a>'+markup([payload({code:'<script>window.fixtureForged=3</script>'})]));
+    await page.addScriptTag({content:js});await page.waitForTimeout(200);
+    const state=await page.evaluate(()=>({clobbered:window.shikiAdsConfig instanceof HTMLCollection,live:window.googlefc!==undefined,forged:window.fixtureForged}));
+    assert(state.clobbered&&!state.live&&state.forged===undefined&&await page.locator('#ad0').getAttribute('data-started')===null&&errors.length===0,'a configuration named only by page markup is ignored');await page.close();
+  }
   assert(providerRequests===0,'no real advertising, CMP, or affiliate service was contacted');
 }catch(error){results.push({name:'exception',pass:false,error:error.message});}
 finally{await browser.close();}

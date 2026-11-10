@@ -117,6 +117,12 @@ try {
     shiki_auto_test_assert(rest_do_request($invalid_request)->get_status() === 400, 'view rejects non-integer cmp_id');
     shiki_auto_test_assert($before_rows === (int) $GLOBALS['wpdb']->get_var('SELECT COUNT(*) FROM ' . shiki_views_table()), 'invalid view parameters never create counter rows');
     wp_set_current_user(1);
+    // Other code may fire save_post with fewer or untyped arguments; no handler may fail, and a missing $update is not a new post.
+    $loose = shiki_auto_test_post(['post_title' => 'TEST loose save_post', 'post_status' => 'draft']); delete_post_meta($loose, '_shiki_new_theme_draft');
+    foreach ([[$loose], [(string) $loose, null], [$loose, get_post($loose)], [0], [''], [[$loose]], [999999999]] as $loose_args) { do_action('save_post', ...$loose_args); }
+    shiki_auto_test_assert(get_post($loose) instanceof WP_Post && !get_post_meta($loose, '_shiki_new_theme_draft', true), 'save_post with fewer or untyped arguments is tolerated');
+    do_action('save_post', $loose, get_post($loose), false);
+    shiki_auto_test_assert('1' === (string) get_post_meta($loose, '_shiki_new_theme_draft', true), 'an explicit new-post save still marks the theme draft');
     shiki_schedule_automation(); $first_cron = wp_next_scheduled('shiki_season_tick'); shiki_schedule_automation(); shiki_auto_test_assert($first_cron === wp_next_scheduled('shiki_season_tick'), 'cron does not multiply');
     wp_delete_term($mapping['winter'], 'category'); shiki_schedule_automation(); shiki_auto_test_assert(!isset(shiki_season_terms()['winter']) && !term_exists($mapping['winter'], 'category'), 'deleted mapped category not silently recreated');
     $owner_token = shiki_acquire_job_lock('shiki_test_lock', 5); shiki_auto_test_assert($owner_token && !shiki_acquire_job_lock('shiki_test_lock', 5), 'atomic job lock'); shiki_release_job_lock('shiki_test_lock', 'wrong-owner'); shiki_auto_test_assert(!shiki_acquire_job_lock('shiki_test_lock', 5), 'foreign owner cannot release lock'); shiki_release_job_lock('shiki_test_lock', $owner_token); shiki_auto_test_assert((bool) shiki_acquire_job_lock('shiki_test_lock', 5), 'owner releases lock'); delete_option('shiki_test_lock');

@@ -365,8 +365,10 @@ function shiki_seo_metabox($post) {
     echo '<p><label><input type="checkbox" name="_shiki_noindex" value="1" ' . checked('1', get_post_meta($post->ID, '_shiki_noindex', true), false) . '> ' . esc_html__('検索への掲載を抑止（noindex・サイトマップから除外）', 'shikipress') . '</label></p>';
     echo '<p class="description">' . esc_html__('noindexはアクセス制限ではありません。非公開情報にはWordPressの非公開設定とサーバーのアクセス制限を使用してください。', 'shikipress') . '</p>';
 }
-add_action('save_post', function ($id, $post) {
-    if (!in_array($post->post_type, ['post','page'], true) || !isset($_POST['shiki_seo_nonce']) || !wp_verify_nonce(sanitize_text_field(wp_unslash($_POST['shiki_seo_nonce'])), 'shiki_save_seo') || !current_user_can('edit_post', $id) || wp_is_post_revision($id) || wp_is_post_autosave($id)) { return; }
+add_action('save_post', function ($id = 0, $post = null) {
+    // save_post may be fired by other code with fewer arguments.
+    $post = shiki_saved_post($id, $post); if (!$post) { return; } $id = (int) $post->ID;
+    if (!in_array($post->post_type, ['post','page'], true) ||!isset($_POST['shiki_seo_nonce']) || !wp_verify_nonce(sanitize_text_field(wp_unslash($_POST['shiki_seo_nonce'])), 'shiki_save_seo') || !current_user_can('edit_post', $id) || wp_is_post_revision($id) || wp_is_post_autosave($id)) { return; }
     foreach (['_shiki_seo_title'=>160,'_shiki_seo_description'=>320] as $key=>$length) { update_post_meta($id, $key, shiki_seo_limit(sanitize_text_field(wp_unslash($_POST[$key] ?? '')), $length)); }
     $image = absint($_POST['_shiki_og_image'] ?? 0);
     update_post_meta($id, '_shiki_og_image', $image && wp_attachment_is_image($image) && current_user_can('edit_post', $image) ? $image : 0);
