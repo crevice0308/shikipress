@@ -177,6 +177,9 @@ def theme_page(name, result, expect):
         checks['noindex_robots'] = 'noindex' in robots
     if name == 'not-found':
         checks['not_found_template'] = 'not-found' in classes
+    if name == 'preview-season-anonymous':
+        body = [(a.get('class') or '').split() for tag, a in page.tags if tag == 'body']
+        checks['preview_requires_administrator'] = bool(body) and 'season-' + expect['preview_season'] not in body[0]
     return checks, detail
 
 
@@ -227,8 +230,15 @@ def run(private_file, reports):
         if name == 'preview-season':
             page = Page(text)
             body = [a.get('class') or '' for tag, a in page.tags if tag == 'body']
-            checks['previewed_season_applied'] = bool(body) and 'season-winter' in body[0].split()
+            checks['previewed_season_applied'] = bool(body) and 'season-' + expect['preview_season'] in body[0].split()
             checks['preview_not_cacheable'] = 'no-cache' in (result['headers'].get('Cache-Control') or '')
+        elif name.endswith('-signed-in'):
+            # The public page with the administrator's toolbar: same structure and public scope as for readers.
+            signed, signed_detail = theme_page(name.replace('-signed-in', '').replace('single', 'single-featured'), result, expect)
+            signed['toolbar_shown'] = 'id="wpadminbar"' in text
+            checks.update(signed)
+            if not all(signed.values()):
+                print(json.dumps({'case': name, 'failed_checks': [key for key, value in signed.items() if not value], 'detail': signed_detail}, ensure_ascii=False))
         else:
             checks['admin_screen'] = 'id="wpbody"' in text
         if name.startswith('admin-tab-') or name == 'admin-submenu-design':

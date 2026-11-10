@@ -47,7 +47,7 @@ GitHub の「Download ZIP」は開発資料も含むソース一式です。そ�
 
 - `npm ci --ignore-scripts && npx playwright install --with-deps chromium && npm run test:layout`: 外部広告へ接続しない画面回帰テスト
 
-[データ保全テスト](tests/upgrade/README.md)、[画面回帰テスト](tests/layout/README.md)、[検証記録](docs/verification.md) を参照してください。通常のテストは読み取り専用権限で実行します。Release専用ジョブだけに書き込み権限を限定しています。テーマの安定版番号を上げてmainへ反映し、同一コミットの互換性CIと画面回帰CIが成功すると、ZIP・SHA256SUMS・更新メタデータを生成・検証して正式Releaseを自動公開します。公開済みの版・タグ・資産は上書きしません。
+[データ保全テスト](tests/upgrade/README.md)、[テーマ統合テストと描画検査](tests/theme-suites/README.md)、[画面回帰テスト](tests/layout/README.md)、[検証記録](docs/verification.md) を参照してください。通常のテストは読み取り専用権限で実行します。Release専用ジョブだけに書き込み権限を限定しています。テーマの安定版番号を上げてmainへ反映し、同一コミットの互換性CIと画面回帰CIが成功すると、ZIP・SHA256SUMS・更新メタデータを生成・検証して正式Releaseを自動公開します。公開済みの版・タグ・資産は上書きしません。
 
 ## ライセンス
 

@@ -189,8 +189,17 @@ $cookies = array(
 	LOGGED_IN_COOKIE => wp_generate_auth_cookie( 1, $expiration, 'logged_in', $token ),
 );
 // Administrator-only season preview on the public site; its nonce must belong to the same session.
+// (wp_nonce_url() returns an HTML-escaped URL, so the query is built directly here.)
 $_COOKIE[ LOGGED_IN_COOKIE ] = $cookies[ LOGGED_IN_COOKIE ];
-$admin['preview-season'] = wp_nonce_url( add_query_arg( 'shiki_preview_season', 'winter', home_url( '/' ) ), 'shiki_season_preview' );
+$preview_season = 'winter' === shiki_season() ? 'summer' : 'winter';
+$preview_url = add_query_arg( array( 'shiki_preview_season' => $preview_season, '_wpnonce' => wp_create_nonce( 'shiki_season_preview' ) ), home_url( '/' ) );
+unset( $_COOKIE[ LOGGED_IN_COOKIE ] );
+$admin['preview-season'] = $preview_url;
+// The same link without the administrator session must render the ordinary home page.
+$public['preview-season-anonymous'] = $preview_url;
+// Signed-in readers of the public site (admin bar present).
+$admin['home-signed-in'] = $public['home'];
+$admin['single-signed-in'] = $public['single-featured'];
 
 $written = file_put_contents( $target, wp_json_encode( array(
 	'origin' => home_url(),
@@ -203,6 +212,7 @@ $written = file_put_contents( $target, wp_json_encode( array(
 		'author_post_title' => get_the_title( $posts[0] ),
 		'child_parent_title' => get_the_title( $pages['about'] ),
 		'event_label' => 'TEST 通年イベント',
+		'preview_season' => $preview_season,
 	),
 ), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT ) );
 if ( ! $written ) { throw new RuntimeException( 'Could not write the URL map.' ); }
