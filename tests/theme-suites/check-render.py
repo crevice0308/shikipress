@@ -29,17 +29,26 @@ class LocalRedirects(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+# End tags HTML allows authors to omit; an open one is closed silently by its container.
+OPTIONAL_END = {'p', 'li', 'dt', 'dd', 'tr', 'td', 'th', 'thead', 'tbody', 'tfoot', 'colgroup', 'caption', 'option', 'optgroup', 'rp', 'rt', 'html', 'head', 'body'}
+
+
 class Page(HTMLParser):
-    """Collects start tags, comments and the text of the first h1."""
+    """Collects start tags, comments, the text of each h1 and unbalanced element nesting."""
 
     def __init__(self, text):
         super().__init__(convert_charrefs=True)
-        self.tags, self.comments, self.h1 = [], [], []
+        self.tags, self.comments, self.h1, self.unbalanced = [], [], [], []
         self._in_h1 = False
+        self._open = []
         self.feed(text)
+        self.close()
+        self.unbalanced += [f'<{tag}> never closed' for tag in self._open if tag not in OPTIONAL_END]
 
     def handle_starttag(self, tag, attrs):
         self.tags.append((tag, dict(attrs)))
+        if tag not in VOID:
+            self._open.append(tag)
         if tag == 'h1':
             self._in_h1 = True
             self.h1.append('')
@@ -47,6 +56,17 @@ class Page(HTMLParser):
     def handle_endtag(self, tag):
         if tag == 'h1':
             self._in_h1 = False
+        if tag in VOID:
+            return
+        if tag not in self._open:
+            self.unbalanced.append(f'</{tag}> without an open element')
+            return
+        while self._open:
+            current = self._open.pop()
+            if current == tag:
+                break
+            if current not in OPTIONAL_END:
+                self.unbalanced.append(f'<{current}> still open at </{tag}>')
 
     def handle_data(self, data):
         if self._in_h1 and self.h1:
@@ -119,6 +139,7 @@ def theme_page(name, result, expect):
         'fragment_links_resolve': all(value in known for value in fragments),
         'aria_references_resolve': all(value in known for value in references),
         'label_targets_exist': all(value in known for value in labels),
+        'balanced_markup': not page.unbalanced,
         'at_most_one_canonical': len(page.values('link', 'rel', 'canonical', 'href')) <= 1,
         'at_most_one_description': len(page.values('meta', 'name', 'description', 'content')) <= 1,
         'theme_metadata_block_once': page.comments.count('ShikiPress metadata') == 1,
@@ -126,7 +147,13 @@ def theme_page(name, result, expect):
     }
     detail = {'duplicate_ids': duplicates[:8], 'dangling_fragments': sorted({v for v in fragments if v not in known})[:8],
               'dangling_aria': sorted({v for v in references if v not in known})[:8], 'dangling_labels': sorted({v for v in labels if v not in known})[:8],
-              'h1': [value.strip()[:60] for value in page.h1][:4], 'leaks': leaks(name, text)}
+              'h1': [value.strip()[:60] for value in page.h1][:4], 'leaks': leaks(name, text), 'unbalanced': page.unbalanced[:8]}
+    title = re.search(r'<title>(.*?)</title>', text, re.S)
+    detail['outline'] = {'title': (title.group(1).strip() if title else '')[:90], 'h1': [value.strip()[:50] for value in page.h1][:2],
+                         'canonical': page.values('link', 'rel', 'canonical', 'href'), 'robots': page.values('meta', 'name', 'robots', 'content'),
+                         'description': [(value or '')[:70] for value in page.values('meta', 'name', 'description', 'content')],
+                         'og_type': page.values('meta', 'property', 'og:type', 'content'), 'cards': page.count('article', 'post-card'),
+                         'ads': page.count('aside', 'shiki-ad'), 'ids': len(ids)}
     classes = page.classes()
     ads = page.count('aside', 'shiki-ad')
     robots = ' '.join(page.values('meta', 'name', 'robots', 'content'))
@@ -219,8 +246,10 @@ def run(private_file, reports):
             checks, detail = theme_page(name, result, expect)
         if result['type'].startswith('text/html'):
             (pages / f'{name}.html').write_text(text)
+        outline = detail.pop('outline', None)
         results.append({'case': name, 'url': url, 'status': result['status'], 'bytes': result['bytes'], 'checks': checks,
-                        'pass': all(checks.values()), **({'detail': detail} if not all(checks.values()) else {})})
+                        'pass': all(checks.values()), **({'outline': outline} if outline else {}),
+                        **({'detail': detail} if not all(checks.values()) else {})})
     for name, url in data['admin'].items():
         result = fetch(opener, url, data['cookies'])
         text = result['text']
@@ -236,6 +265,7 @@ def run(private_file, reports):
             # The public page with the administrator's toolbar: same structure and public scope as for readers.
             signed, signed_detail = theme_page(name.replace('-signed-in', '').replace('single', 'single-featured'), result, expect)
             signed['toolbar_shown'] = 'id="wpadminbar"' in text
+            signed_detail.pop('outline', None)
             checks.update(signed)
             if not all(signed.values()):
                 print(json.dumps({'case': name, 'failed_checks': [key for key, value in signed.items() if not value], 'detail': signed_detail}, ensure_ascii=False))
@@ -253,7 +283,8 @@ def run(private_file, reports):
               'passed': sum(1 for r in results if r['pass']), 'failed': [r for r in results if not r['pass']]}
     (reports / 'render-sweep.json').write_text(json.dumps(report, indent=2, ensure_ascii=False) + '\n')
     for row in results:
-        print(('PASS ' if row['pass'] else 'FAIL ') + row['case'] + f" [{row['status']}, {row['bytes']} bytes, {len(row['checks'])} checks]")
+        print(('PASS ' if row['pass'] else 'FAIL ') + row['case'] + f" [{row['status']}, {row['bytes']} bytes, {len(row['checks'])} checks]"
+              + (' ' + json.dumps(row['outline'], ensure_ascii=False) if row.get('outline') else ''))
     for row in report['failed']:
         print(json.dumps({'case': row['case'], 'failed_checks': [key for key, value in row['checks'].items() if not value], 'detail': row.get('detail')}, ensure_ascii=False))
     print(json.dumps({'cases': len(results), 'checks': sum(len(r['checks']) for r in results), 'passed': report['passed'], 'failed': len(report['failed'])}))
