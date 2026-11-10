@@ -113,7 +113,7 @@ function shiki_setup_categories(): array {
         if (is_wp_error($term)) { $report[$season] = '作成できませんでした。カテゴリー一覧で確認してください'; }
         else { $mapping[$season] = (int) $term['term_id']; $report[$season] = '作成しました'; }
     }
-    $settings['season_terms'] = $mapping; update_option('shikipress_settings', $settings); shiki_invalidate_cache();
+    $settings['season_terms'] = $mapping; update_option('shikipress_settings', $settings, false); shiki_invalidate_cache();
     return $report;
 }
 function shiki_classifier_keywords(): array {
@@ -190,14 +190,18 @@ function shiki_adopt_slug(int $post_id, string $candidate, bool $explicit = fals
     update_post_meta($post_id, '_shiki_auto_slug', $slug);
     return $slug;
 }
-add_action('transition_post_status', function ($new, $old, $post): void {
-    if ($new === 'publish' || $old === 'publish') { update_post_meta($post->ID, '_shiki_ever_published', 1); }
+add_action('transition_post_status', function ($new, $old, $post = null): void {
+    if ($post instanceof WP_Post && ($new === 'publish' || $old === 'publish')) { update_post_meta($post->ID, '_shiki_ever_published', 1); }
 }, 10, 3);
-add_action('save_post', function (int $post_id, WP_Post $post, bool $update): void {
-    if (!$update && !wp_is_post_revision($post_id) && in_array($post->post_status, ['auto-draft', 'draft'], true) && in_array($post->post_type, ['post', 'page'], true)) { update_post_meta($post_id, '_shiki_new_theme_draft', 1); }
+// Plugins sometimes fire save_post with fewer or untyped arguments; the handlers below
+// accept that instead of failing the save. Only core's explicit $update === false is a new post.
+add_action('save_post', function ($post_id = 0, $post = null, $update = true): void {
+    $post = shiki_saved_post($post_id, $post); if (!$post) { return; } $post_id = (int) $post->ID;
+    if (false === $update && !wp_is_post_revision($post_id) && in_array($post->post_status, ['auto-draft', 'draft'], true) && in_array($post->post_type, ['post', 'page'], true)) { update_post_meta($post_id, '_shiki_new_theme_draft', 1); }
 }, 5, 3);
-add_action('save_post', function (int $post_id, WP_Post $post, bool $update): void {
+add_action('save_post', function ($post_id = 0, $post = null): void {
     static $busy = false;
+    $post = shiki_saved_post($post_id, $post); if (!$post) { return; } $post_id = (int) $post->ID;
     if ($busy || wp_is_post_revision($post_id) || wp_is_post_autosave($post_id) || !in_array($post->post_type, ['post', 'page'], true) || $post->post_status === 'auto-draft') { return; }
     if (!get_post_meta($post_id, '_shiki_draft_seen', true)) {
         update_post_meta($post_id, '_shiki_draft_seen', 1);
@@ -214,7 +218,7 @@ add_action('save_post', function (int $post_id, WP_Post $post, bool $update): vo
         }
         $busy = false;
     }
-}, 20, 3);
+}, 20, 2);
 add_action('add_meta_boxes', function (): void {
     foreach (['post', 'page'] as $type) { add_meta_box('shiki-automation', '季節のしおり・記事自動化', 'shiki_automation_metabox', $type, 'normal', 'default'); }
 });
@@ -231,7 +235,8 @@ function shiki_automation_metabox(WP_Post $post): void {
         }
         echo '<p><label><input type="checkbox" name="shiki_apply_classification" value="1"> 保存時に選択した季節を追加する（既存カテゴリーを維持）</label></p>';
         echo '<p><label><input type="checkbox" name="shiki_classification_lock" value="1" ' . checked((bool) get_post_meta($post->ID, '_shiki_classification_lock', true), true, false) . '> 分類を手動ロック</label></p>';
-        echo '<p><label>特集の優先度（0〜100） <input type="number" min="0" max="100" name="shiki_priority" value="' . (int) get_post_meta($post->ID, '_shiki_priority', true) . '"></label></p>';
+        // Featured/related ranking is site-wide curation, not a per-author setting.
+        if (current_user_can('edit_others_posts')) { echo '<p><label>特集の優先度（0〜100） <input type="number" min="0" max="100" name="shiki_priority" value="' . (int) get_post_meta($post->ID, '_shiki_priority', true) . '"></label></p>'; }
     }
     echo '<hr><p><strong>英語スラッグ候補</strong> <span id="shiki-slug-source">' . esc_html($candidate['source']) . '</span></p>';
     echo '<p><label for="shiki-slug-candidate">候補を編集</label> <input class="widefat" id="shiki-slug-candidate" name="shiki_slug_candidate" maxlength="100" value="' . esc_attr($candidate['slug']) . '"></p>';
@@ -245,13 +250,14 @@ function shiki_automation_metabox(WP_Post $post): void {
     } else { echo '<p>公開済み・公開履歴のある記事のURLは、この機能では変更しません。</p>'; }
     echo '<p><label><input type="checkbox" name="shiki_slug_lock" value="1" ' . checked((bool) get_post_meta($post->ID, '_shiki_slug_lock', true), true, false) . '> スラッグを手動固定（自動適用を停止）</label></p><p id="shiki-automation-status" role="status" aria-live="polite"></p>';
 }
-add_action('save_post', function (int $post_id, WP_Post $post): void {
+add_action('save_post', function ($post_id = 0, $post = null): void {
     static $busy = false;
+    $post = shiki_saved_post($post_id, $post); if (!$post) { return; } $post_id = (int) $post->ID;
     if ($busy || empty($_POST['shiki_editor_nonce']) || !wp_verify_nonce(sanitize_text_field(wp_unslash($_POST['shiki_editor_nonce'])), 'shiki_editor_' . $post_id) || !current_user_can('edit_post', $post_id) || wp_is_post_revision($post_id) || wp_is_post_autosave($post_id)) { return; }
     $busy = true;
     update_post_meta($post_id, '_shiki_classification_lock', !empty($_POST['shiki_classification_lock']) ? 1 : 0);
     update_post_meta($post_id, '_shiki_slug_lock', !empty($_POST['shiki_slug_lock']) ? 1 : 0);
-    update_post_meta($post_id, '_shiki_priority', min(100, max(0, (int) ($_POST['shiki_priority'] ?? 0))));
+    if (current_user_can('edit_others_posts') && isset($_POST['shiki_priority']) && is_scalar($_POST['shiki_priority'])) { update_post_meta($post_id, '_shiki_priority', min(100, max(0, (int) $_POST['shiki_priority']))); }
     if ($post->post_type === 'post' && !empty($_POST['shiki_apply_classification'])) {
         $mapping = shiki_season_terms(); $terms = [];
         foreach ((array) ($_POST['shiki_classification'] ?? []) as $season) { if (is_string($season) && isset($mapping[$season])) { $terms[] = $mapping[$season]; } }
@@ -310,6 +316,8 @@ add_action('wp_ajax_shiki_translate_title', function (): void {
     $scheduled = is_array($existing) && !empty($existing['token']) && wp_next_scheduled('shiki_translate_job', [$post->ID, $existing['token']]);
     $working = is_array($active_lock) && (int) ($active_lock['expires'] ?? 0) > time();
     if (is_array($existing) && in_array($existing['state'] ?? '', ['queued', 'working'], true) && ($existing['title_hash'] ?? '') === hash('sha256', $post->post_title) && ($scheduled || $working) && (int) ($existing['created'] ?? 0) > time() - 15 * MINUTE_IN_SECONDS) { wp_send_json_success(['state' => 'queued', 'message' => 'すでに処理待ちです。']); }
+    // A finished candidate for the same saved title is reused; DeepL is never billed twice for it.
+    if (is_array($existing) && 'done' === ($existing['state'] ?? '') && ($existing['title_hash'] ?? '') === hash('sha256', $post->post_title) && is_string($existing['slug'] ?? null) && '' !== $existing['slug']) { wp_send_json_success(['state' => 'done', 'slug' => $existing['slug'], 'message' => '同じタイトルで作成済みの候補を表示しました（DeepLへの再送信なし）。']); }
     $token = wp_generate_password(20, false, false);
     update_post_meta($post->ID, '_shiki_translation', ['state' => 'queued', 'title_hash' => hash('sha256', $post->post_title), 'token' => $token, 'attempts' => 0, 'created' => time()]);
     wp_schedule_single_event(time() + 1, 'shiki_translate_job', [$post->ID, $token]);

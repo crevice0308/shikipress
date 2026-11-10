@@ -40,10 +40,15 @@ function shiki_seo_managed() {
     $plugin = defined('WPSEO_VERSION') || defined('RANK_MATH_VERSION') || defined('AIOSEO_VERSION') || defined('SEOPRESS_VERSION');
     return (bool) apply_filters('shiki_seo_managed', !$plugin);
 }
+/** Excluding the front or posts page from page lists must never de-index the site's home. */
+function shiki_seo_excluded_page_ids(): array {
+    $keep = array_filter([(int) get_option('page_on_front'), (int) get_option('page_for_posts')]);
+    return array_values(array_diff(shiki_ids(shiki_option('page_exclude', [])), 'page' === get_option('show_on_front') ? $keep : []));
+}
 function shiki_seo_is_public_post($post, $indexable = false) {
     $post = get_post($post);
     if (!$post || 'publish' !== $post->post_status || '' !== $post->post_password || '1' === (string) get_post_meta($post->ID, '_shiki_exclude', true)) { return false; }
-    if ('page' === $post->post_type && in_array((int) $post->ID, array_map('absint', (array) shiki_option('page_exclude', [])), true)) { return false; }
+    if ('page' === $post->post_type && in_array((int) $post->ID, shiki_seo_excluded_page_ids(), true)) { return false; }
     $hidden_categories = array_map('absint', (array) shiki_option('category_exclude', []));
     if ('post' === $post->post_type && $hidden_categories && has_category($hidden_categories, $post)) { return false; }
     return !$indexable || '1' !== (string) get_post_meta($post->ID, '_shiki_noindex', true);
@@ -82,9 +87,10 @@ function shiki_seo_canonical() {
         }
         return $url;
     }
+    // front-page.php renders the same curated home for /page/N/; the paginated list lives at shiki_stories.
+    if (is_front_page()) { return home_url('/'); }
     $base = '';
-    if (is_front_page()) { $base = home_url('/'); }
-    elseif (is_home()) { $id = (int) get_option('page_for_posts'); $base = $id ? get_permalink($id) : home_url('/'); }
+    if (is_home()) { $id = (int) get_option('page_for_posts'); $base = $id ? get_permalink($id) : home_url('/'); }
     elseif (is_search()) { $base = get_search_link(get_search_query(false)); }
     elseif (is_category() || is_tag() || is_tax()) { $base = get_term_link(get_queried_object()); }
     elseif (is_author()) { $base = get_author_posts_url(get_queried_object_id()); }
@@ -208,6 +214,9 @@ function shiki_breadcrumb_items() {
             }
         }
         $items[] = ['name'=>get_the_title(get_queried_object_id()), 'url'=>shiki_seo_canonical()];
+    } elseif ((is_category() || is_tag() || is_tax()) && !(get_queried_object() instanceof WP_Term)) {
+        // Unresolvable term combinations (e.g. a search limited to a missing category) have no term to describe.
+        $items[] = ['name'=>is_search() ? sprintf(__('「%s」の検索結果', 'shikipress'), get_search_query(false)) : wp_strip_all_tags(get_the_archive_title()), 'url'=>shiki_seo_canonical()];
     } elseif (is_category() || is_tag() || is_tax()) {
         $term = get_queried_object();
         foreach (array_reverse(get_ancestors($term->term_id, $term->taxonomy, 'taxonomy')) as $parent) {
@@ -268,8 +277,8 @@ function shiki_seo_map_args($args, $post_type = 'post') {
     if (!empty($args['meta_query'])) { $meta[] = $args['meta_query']; }
     foreach (['_shiki_exclude','_shiki_noindex'] as $key) { $meta[] = ['relation'=>'OR', ['key'=>$key,'compare'=>'NOT EXISTS'], ['key'=>$key,'value'=>'1','compare'=>'!=']]; }
     $args['meta_query'] = $meta;
-    if ('post' === $post_type) { $args['category__not_in'] = array_values(array_unique(array_merge((array) ($args['category__not_in'] ?? []), array_map('absint', (array) shiki_option('category_exclude', []))))); }
-    if ('page' === $post_type) { $args['post__not_in'] = array_values(array_unique(array_merge((array) ($args['post__not_in'] ?? []), array_map('absint', (array) shiki_option('page_exclude', []))))); }
+    if ('post' === $post_type) { $args['tax_query'] = shiki_hidden_category_tax_query($args['tax_query'] ?? [], shiki_option('category_exclude', [])); }
+    if ('page' === $post_type) { $args['post__not_in'] = array_values(array_unique(array_merge((array) ($args['post__not_in'] ?? []), shiki_seo_excluded_page_ids()))); }
     return $args;
 }
 add_filter('wp_sitemaps_posts_query_args', 'shiki_seo_map_args', 20, 2);
@@ -356,8 +365,10 @@ function shiki_seo_metabox($post) {
     echo '<p><label><input type="checkbox" name="_shiki_noindex" value="1" ' . checked('1', get_post_meta($post->ID, '_shiki_noindex', true), false) . '> ' . esc_html__('検索への掲載を抑止（noindex・サイトマップから除外）', 'shikipress') . '</label></p>';
     echo '<p class="description">' . esc_html__('noindexはアクセス制限ではありません。非公開情報にはWordPressの非公開設定とサーバーのアクセス制限を使用してください。', 'shikipress') . '</p>';
 }
-add_action('save_post', function ($id, $post) {
-    if (!in_array($post->post_type, ['post','page'], true) || !isset($_POST['shiki_seo_nonce']) || !wp_verify_nonce(sanitize_text_field(wp_unslash($_POST['shiki_seo_nonce'])), 'shiki_save_seo') || !current_user_can('edit_post', $id) || wp_is_post_revision($id) || wp_is_post_autosave($id)) { return; }
+add_action('save_post', function ($id = 0, $post = null) {
+    // save_post may be fired by other code with fewer arguments.
+    $post = shiki_saved_post($id, $post); if (!$post) { return; } $id = (int) $post->ID;
+    if (!in_array($post->post_type, ['post','page'], true) ||!isset($_POST['shiki_seo_nonce']) || !wp_verify_nonce(sanitize_text_field(wp_unslash($_POST['shiki_seo_nonce'])), 'shiki_save_seo') || !current_user_can('edit_post', $id) || wp_is_post_revision($id) || wp_is_post_autosave($id)) { return; }
     foreach (['_shiki_seo_title'=>160,'_shiki_seo_description'=>320] as $key=>$length) { update_post_meta($id, $key, shiki_seo_limit(sanitize_text_field(wp_unslash($_POST[$key] ?? '')), $length)); }
     $image = absint($_POST['_shiki_og_image'] ?? 0);
     update_post_meta($id, '_shiki_og_image', $image && wp_attachment_is_image($image) && current_user_can('edit_post', $image) ? $image : 0);

@@ -18,7 +18,9 @@
             <?php } ?>
         </div>
         <nav class="desktop-navigation" aria-label="メインナビゲーション">
-            <?php if (has_nav_menu('primary')) { wp_nav_menu(['theme_location' => 'primary', 'container' => false, 'menu_class' => 'primary-menu', 'depth' => 1]); } else { ?>
+            <?php // Never fall back to core's page list: it would also list excluded and protected pages.
+            $shiki_primary_menu = has_nav_menu('primary') ? wp_nav_menu(['theme_location' => 'primary', 'container' => false, 'menu_class' => 'primary-menu', 'depth' => 1, 'fallback_cb' => false, 'echo' => false]) : '';
+            if ($shiki_primary_menu) { echo $shiki_primary_menu; /* Core menu markup, escaped by the walker. */ } else { ?>
                 <a href="<?php echo esc_url(home_url('/')); ?>" <?php if (is_front_page()) { echo 'aria-current="page"'; } ?>>ホーム</a>
                 <a href="#nav-categories" data-panel="nav-categories" aria-controls="nav-categories" aria-expanded="false">四季の暮らし</a>
                 <a href="#nav-pages" data-panel="nav-pages" aria-controls="nav-pages" aria-expanded="false">このサイトについて</a>

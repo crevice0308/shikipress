@@ -1,6 +1,9 @@
 (function () {
   'use strict';
-  const cfg = window.shikiAdsConfig || {live: false};
+  // Accept only the theme's inline object literal. If that script is missing (for example
+  // blocked by a content security policy), an element named by page content is not a configuration.
+  const provided = window.shikiAdsConfig;
+  const cfg = provided && Object.getPrototypeOf(provided) === Object.prototype ? provided : {live: false};
   const loaders = new Map();
   let tcData = null;
   let listenerInstalled = false;
@@ -20,9 +23,14 @@
     node.dispatchEvent(new CustomEvent('shiki:ad-state', {detail: {state: state}}));
   };
   const payloads = new Map();
+  // Only slots rendered by this response carry its one-time token. Markup copied into
+  // post content (which may keep data-* attributes) is never treated as an ad slot.
+  const slotToken = typeof cfg.slotToken === 'string' && cfg.slotToken.length >= 16 ? cfg.slotToken : '';
   elements.forEach(function (node) {
-    try { payloads.set(node, JSON.parse(decode(node.dataset.shikiAd))); }
-    catch (err) { setState(node, 'failure', '広告枠の設定を確認してください'); }
+    let payload = null;
+    try { payload = JSON.parse(decode(node.dataset.shikiAd)); } catch (err) { payload = null; }
+    if (!slotToken || !payload || typeof payload !== 'object' || payload.token !== slotToken) return;
+    payloads.set(node, payload);
   });
   const deviceAllowed = function (payload) {
     const mobile = window.matchMedia('(max-width: 767px)').matches;
@@ -94,13 +102,16 @@
           url.pathname === '/pagead/js/adsbygoogle.js' && url.searchParams.get('client') === publisher;
       } catch (err) { return false; }
     };
-    const script = Array.from(document.scripts).find(function (node) {
+    const candidates = Array.from(document.scripts).filter(function (node) {
       return matches(node.getAttribute('src')) || matches(node.getAttribute('data-src'));
     });
-    if (!script) return null;
-    const type = (script.getAttribute('type') || '').trim().toLowerCase();
-    const executable = !type || ['text/javascript', 'application/javascript', 'module'].includes(type);
-    return {script: script, pending: !matches(script.getAttribute('src')) || !executable};
+    if (!candidates.length) return null;
+    // A CMP may release consent by adding an executable copy and leaving the inert original.
+    const ready = candidates.find(function (node) {
+      const type = (node.getAttribute('type') || '').trim().toLowerCase();
+      return matches(node.getAttribute('src')) && (!type || ['text/javascript', 'application/javascript', 'module'].includes(type));
+    });
+    return {script: ready || candidates[0], pending: !ready};
   };
   const adsenseLoader = function (publisher) {
     if (!/^ca-pub-[0-9]{16}$/.test(publisher || '')) return Promise.reject(new Error('publisher'));
@@ -186,6 +197,8 @@
     listenerInstalled = true;
     try {
       window.__tcfapi('addEventListener', 2, function (data, success) {
+        // Re-showing the CMP dialog does not change the stored decision; wait for the user's action.
+        if (success && data && data.eventStatus === 'cmpuishown' && tcData) return;
         tcData = success ? data : null;
         if (productionStarted && Array.from(consentedSlots).some(function (payload) { return !consentAllowed(payload); }) && !reloadRequested) {
           reloadRequested = true;

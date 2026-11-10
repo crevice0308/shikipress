@@ -38,11 +38,72 @@ jobs:
           php tests/link-lock/unit.php
           php -l tests/security-tools/unit.php
           php tests/security-tools/unit.php
+          php -l tests/save-hooks/unit.php
+          php tests/save-hooks/unit.php
+          bash -n tests/theme-suites/run-ci.sh
+          php -l tests/theme-suites/render-setup.php
+          python3 -m py_compile tests/theme-suites/check-render.py
+          find tests -maxdepth 1 -type f -name '*-integration.php' -print0 | xargs -0 -n1 php -l
           find tests/automation-jobs -type f -name '*.php' -print0 | xargs -0 -n1 php -l
           for scenario in $(php tests/automation-jobs/unit.php --list); do
             php tests/automation-jobs/unit.php "$scenario"
           done
           find tests/updater -type f -name '*.php' -print0 | xargs -0 -n1 php -l
+  theme-suites:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - php: '8.2'
+            wp: '6.6'
+          - php: '8.5'
+            wp: latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      SHIKI_DB_PASS: root
+      SHIKI_WP_VERSION: ${{ matrix.wp }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: mysqli, gd, mbstring, zip, dom
+          coverage: none
+          tools: wp-cli
+      - name: Ensure official MySQL-compatible client is available
+        run: |
+          if ! command -v mysql >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y default-mysql-client
+          fi
+      - name: Theme integration suites on a disposable WordPress
+        run: bash tests/theme-suites/run-ci.sh
+      - name: Preserve theme suite evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: theme-suites-wp-${{ matrix.wp }}-php-${{ matrix.php }}
+          path: ${{ runner.temp }}/shikipress-theme-suites/reports
+          if-no-files-found: warn
+      - name: Print PHP log of the disposable site
+        if: always()
+        run: |
+          if test -f "$RUNNER_TEMP/shikipress-theme-suites/wordpress/wp-content/debug.log"; then
+            cat "$RUNNER_TEMP/shikipress-theme-suites/wordpress/wp-content/debug.log"
+          fi
   content-retention:
     runs-on: ubuntu-latest
     timeout-minutes: 20

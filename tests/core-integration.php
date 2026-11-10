@@ -24,6 +24,15 @@ try{
     shiki_core_assert(strpos($sanitized['tabs']['home'],'<')===false,'Tab text strips HTML');
     shiki_core_assert(count($sanitized['page_priority'])===1,'Page priority deduplicated');
     $epoch=(int)get_option('shikipress_cache_epoch');shiki_invalidate_cache();shiki_core_assert((int)get_option('shikipress_cache_epoch')>$epoch,'Cache epoch advances');
+    // save_post may be fired by other code with loose arguments; ID 0 must never resolve to the global post.
+    $GLOBALS['post']=get_post($post);
+    shiki_core_assert(shiki_saved_post($post)->ID===$post&&shiki_saved_post((string)$post,null)->ID===$post&&shiki_saved_post('x',get_post($post))->ID===$post&&null===shiki_saved_post(0)&&null===shiki_saved_post('')&&null===shiki_saved_post([$post])&&null===shiki_saved_post(999999999),'Saved-post resolver tolerates loose hook arguments');
+    unset($GLOBALS['post']);
+    // Another settings group (e.g. the generic options.php screen) must never write theme settings.
+    $stored=get_option('shikipress_settings',[]);$_POST['option_page']='options';
+    shiki_core_assert(shiki_sanitize_settings(array_merge((array)$stored,['ads_mode'=>'production','ads_live_approved'=>true,'ads_cmp_code'=>'<script>TEST</script>','ads_cmp_trusted'=>true]))===$stored,'Foreign settings group cannot write theme settings');
+    $_POST['option_page']=['shikipress'];shiki_core_assert(shiki_sanitize_settings(['ads_mode'=>'off'])===$stored,'Malformed settings group is rejected');
+    unset($_POST['option_page']);shiki_core_assert(shiki_sanitize_settings(['ads_mode'=>'off','unknown'=>1])===['ads_mode'=>'off'],'Internal theme writes keep known keys only');
     $subscriber=wp_insert_user(['user_login'=>'shiki_core_sub_'.wp_generate_password(6,false),'user_pass'=>wp_generate_password(32),'role'=>'subscriber']);
     wp_set_current_user($subscriber);$_POST['option_page']='shikipress';$_POST['shikipress_section']='navigation';
     shiki_core_assert(shiki_sanitize_settings(['page_exclude'=>[]])===get_option('shikipress_settings',[]),'Low privilege settings save rejected');

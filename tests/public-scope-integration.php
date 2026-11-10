@@ -3,7 +3,7 @@
 if (!defined('SHIKI_TEST_ENV') || !SHIKI_TEST_ENV || !defined('WP_CLI')) {throw new RuntimeException('Dedicated environment required');}
 $GLOBALS['shiki_scope_checks']=0;
 function shiki_scope_assert($ok,$label){++$GLOBALS['shiki_scope_checks'];if(!$ok){throw new RuntimeException($label);}echo 'PASS '.$label.PHP_EOL;}
-$old_settings=get_option('shikipress_settings',[]);$old_user=get_current_user_id();$ids=[];$comments=[];
+$old_settings=get_option('shikipress_settings',[]);$old_user=get_current_user_id();$ids=[];$comments=[];$terms=[];$media=[];$users=[];
 try{
  wp_set_current_user(0);
  $make=function($type,$label,$password='',$exclude=false)use(&$ids){$id=wp_insert_post(['post_type'=>$type,'post_status'=>'publish','post_title'=>'TEST_SCOPE_'.strtoupper($label),'post_content'=>'TEST content','post_password'=>$password]);$ids[]=$id;if($exclude){update_post_meta($id,'_shiki_exclude',1);}return $id;};
@@ -20,5 +20,26 @@ try{
  add_action('pre_get_posts',$or_filter,9);$main_before=$GLOBALS['wp_the_query'];
  try{foreach(['feed'=>['feed'=>'rss2'],'search'=>['s'=>'TEST_SCOPE_'],'archive'=>['post_type'=>'post','posts_per_page'=>100]]as$label=>$vars){$query=new WP_Query();$GLOBALS['wp_the_query']=$query;$query->query(array_merge($vars,['posts_per_page'=>100]));$found=array_map('intval',wp_list_pluck($query->posts,'ID'));shiki_scope_assert(in_array($public,$found,true),'OR meta '.$label.' public visible');foreach([$protected,$hidden]as$id){shiki_scope_assert(!in_array($id,$found,true),'OR meta '.$label.' hidden omitted '.$id);}}}
  finally{$GLOBALS['wp_the_query']=$main_before;remove_action('pre_get_posts',$or_filter,9);}
+ // Hidden categories stay excluded when a REST client or a plugin uses a top-level OR taxonomy relation.
+ $term=wp_insert_term('TEST_SCOPE_HIDDENCAT_'.wp_generate_password(6,false),'category');$terms[]=$term['term_id'];$hiddencat=$make('post','hiddencat');wp_set_post_categories($hiddencat,[$term['term_id']]);
+ update_option('shikipress_settings',array_merge(get_option('shikipress_settings',[]),['category_exclude'=>[$term['term_id']]]));
+ foreach([['categories'=>[$term['term_id']]],['tax_relation'=>'OR','categories'=>[$term['term_id']]],['tax_relation'=>'OR','categories'=>[$term['term_id']],'tags'=>[999999]]]as$params){$request=new WP_REST_Request('GET','/wp/v2/posts');foreach($params as$key=>$value){$request->set_param($key,$value);}$request->set_param('per_page',100);$response=rest_do_request($request);shiki_scope_assert(200===$response->get_status()&&!in_array($hiddencat,array_column($response->get_data(),'id'),true),'REST hidden category omitted '.wp_json_encode($params));}
+ $or_tax=static function($query)use($term){if($query->is_main_query()){$query->set('tax_query',['relation'=>'OR',['taxonomy'=>'category','field'=>'term_id','terms'=>[$term['term_id']]],['taxonomy'=>'post_tag','field'=>'term_id','terms'=>[999999]]]);}};
+ add_action('pre_get_posts',$or_tax,9);$main_before=$GLOBALS['wp_the_query'];
+ try{foreach(['feed'=>['feed'=>'rss2'],'search'=>['s'=>'TEST_SCOPE_'],'archive'=>['post_type'=>'post']]as$label=>$vars){$query=new WP_Query();$GLOBALS['wp_the_query']=$query;$query->query(array_merge($vars,['posts_per_page'=>100]));shiki_scope_assert(!in_array($hiddencat,array_map('intval',wp_list_pluck($query->posts,'ID')),true),'OR tax '.$label.' hidden category omitted');}}
+ finally{$GLOBALS['wp_the_query']=$main_before;remove_action('pre_get_posts',$or_tax,9);}
+ $listed=shiki_public_posts(['tax_query'=>['relation'=>'OR',['taxonomy'=>'category','field'=>'term_id','terms'=>[$term['term_id']]]],'posts_per_page'=>100,'fields'=>'ids']);shiki_scope_assert(!in_array($hiddencat,array_map('intval',$listed->posts),true),'Public list OR tax hidden category omitted');
+ // Public media lists omit files attached to protected, excluded or hidden posts; unattached media stays listed.
+ foreach(['public'=>$public,'protected'=>$protected,'excluded'=>$hidden,'hiddencat'=>$hiddencat,'unattached'=>0]as$label=>$parent){$media[$label]=wp_insert_attachment(['post_title'=>'TEST_SCOPE_MEDIA_'.strtoupper($label),'post_mime_type'=>'image/jpeg','post_status'=>'inherit'],false,$parent);$ids[]=$media[$label];}
+ $request=new WP_REST_Request('GET','/wp/v2/media');$request->set_param('search','TEST_SCOPE_MEDIA_');$request->set_param('per_page',100);$found=array_column(rest_do_request($request)->get_data(),'id');
+ shiki_scope_assert(in_array($media['public'],$found,true)&&in_array($media['unattached'],$found,true),'REST public and unattached media visible');
+ foreach(['protected','excluded','hiddencat']as$label){shiki_scope_assert(!in_array($media[$label],$found,true),'REST media of '.$label.' post omitted');}
+ $request=new WP_REST_Request('GET','/wp/v2/media');$request->set_param('parent',[$protected]);$response=rest_do_request($request);shiki_scope_assert(200===$response->get_status()&&[]===$response->get_data(),'REST media filtered by a protected parent is empty');
+ // Anonymous scoped comment queries never share WP_Comment_Query cache keys with moderator queries.
+ $args=apply_filters('rest_comment_query',[],new WP_REST_Request('GET','/wp/v2/comments'));shiki_scope_assert(!empty($args['shiki_public_scope'])&&'publish'===($args['post_status']??null),'Scoped REST comment queries use a distinct cache key');
+ // Editors' link search (view context only) still finds excluded content; anonymous search does not.
+ $editor=wp_insert_user(['user_login'=>'shiki_scope_editor_'.wp_generate_password(6,false),'user_pass'=>wp_generate_password(32),'role'=>'editor']);$users[]=$editor;wp_set_current_user($editor);
+ $request=new WP_REST_Request('GET','/wp/v2/search');$request->set_param('search','TEST_SCOPE_');$request->set_param('per_page',100);$found=array_column(rest_do_request($request)->get_data(),'id');wp_set_current_user(0);
+ shiki_scope_assert(in_array($hidden,$found,true)&&in_array($hiddencat,$found,true),'Editor link search finds excluded and hidden-category posts');
  echo 'PUBLIC_SCOPE_TOTAL '.$GLOBALS['shiki_scope_checks'].PHP_EOL;
-}finally{foreach($comments as$id){wp_delete_comment($id,true);}foreach($ids as$id){wp_delete_post($id,true);}update_option('shikipress_settings',$old_settings);wp_set_current_user($old_user);}
+}finally{foreach($comments as$id){wp_delete_comment($id,true);}foreach($ids as$id){wp_delete_post($id,true);}foreach($terms as$id){wp_delete_term($id,'category');}if($users){require_once ABSPATH.'wp-admin/includes/user.php';foreach($users as$id){wp_delete_user($id);}}update_option('shikipress_settings',$old_settings);wp_set_current_user($old_user);}

@@ -6,12 +6,16 @@ const require=createRequire(import.meta.url); const {chromium}=require('playwrig
 const root=path.resolve(path.dirname(new URL(import.meta.url).pathname),'..');
 const js=fs.readFileSync(path.join(root,'shikipress/assets/ads.js'),'utf8');
 const css=fs.readFileSync(path.join(root,'shikipress/assets/ads.css'),'utf8');
-const browser=await chromium.launch({headless:true,executablePath:process.env.SHIKI_CHROME_BIN||process.env.SHIKI_CHROMIUM||chromium.executablePath(),args:['--no-sandbox','--no-zygote','--single-process']});
+// Normal runs use the pinned Playwright browser. An explicitly selected headless-shell binary
+// (restricted environments) also gets the single-process flags, as in tests/layout.
+const selectedBrowser=process.env.SHIKI_CHROME_BIN||process.env.SHIKI_CHROMIUM||'';
+const browser=await chromium.launch({headless:true,executablePath:selectedBrowser||chromium.executablePath(),args:selectedBrowser?['--no-sandbox','--no-zygote','--single-process']:[]});
 const context=await browser.newContext();
 // Keep one browser context alive: single-process headless shell cannot recreate disposed contexts reliably.
 await context.newPage();
 const results=[];const assert=(condition,name)=>{results.push({name,pass:Boolean(condition)});if(!condition)throw new Error(name);};
-const payload=(overrides={})=>Object.assign({mode:'production',service:'generic',device:'all',vendors:[123],purposes:[1,3,4],code:'<span data-fixture="ad">SYNTHETIC TEST AD</span>',sharedLoaders:[]},overrides);
+const slotToken='SYNTHETIC-BROWSER-TOKEN-000000001';
+const payload=(overrides={})=>Object.assign({token:slotToken,mode:'production',service:'generic',device:'all',vendors:[123],purposes:[1,3,4],code:'<span data-fixture="ad">SYNTHETIC TEST AD</span>',sharedLoaders:[]},overrides);
 const markup=(items)=>items.map((item,index)=>`<aside id="ad${index}" class="shiki-ad" data-shiki-ad="${Buffer.from(JSON.stringify(item)).toString('base64')}"><span class="shiki-ad__label">広告 / PR</span><div class="shiki-ad__body"><span class="shiki-ad__status">TEST</span></div></aside>`).join('');
 const granted={cmpStatus:'loaded',cmpId:999,gdprApplies:true,eventStatus:'tcloaded',tcString:'SYNTHETIC-NOT-A-REAL-TC-STRING',purpose:{consents:{1:true,3:true,4:true}},vendor:{consents:{123:true}}};
 let totalRequests=0;let providerRequests=0;
@@ -26,7 +30,7 @@ async function setup(items,{width=390,live=true,cmp=null,failLoader=false}={}){
   });
   await page.setContent(markup(items));await page.addStyleTag({content:css});
   await page.evaluate(({live,cmp})=>{
-    window.shikiAdsConfig={live,cmpId:999,auto:false};
+    window.shikiAdsConfig={live,cmpId:999,auto:false,slotToken:'SYNTHETIC-BROWSER-TOKEN-000000001'};
     if(cmp){window.__tcfapi=(command,version,callback)=>{window.fixtureConsentCallback=callback;callback(cmp,true);};}
   },{live,cmp});
   await page.addScriptTag({content:js});
@@ -66,6 +70,29 @@ try{
   test=await setup([payload({code:'<script>document.write("TEST")</script>'})],{cmp:granted});
   await test.page.waitForFunction(()=>document.querySelector('#ad0').dataset.state==='failure');
   assert(await test.page.locator('#ad0').getAttribute('data-state')==='failure','unsupported document.write tags fail clearly');await test.page.close();
+  // Markup stored in post content (data-* survives KSES) must never be mounted as a slot.
+  test=await setup([payload({code:'<span data-fixture="ad">REAL</span>'}),payload({token:undefined,code:'<script>window.fixtureForged=1</script>'}),payload({token:'FORGED-TOKEN-0000000000000000',code:'<script>window.fixtureForged=2</script>'})],{cmp:{...granted,gdprApplies:false}});
+  await test.page.waitForFunction(()=>document.querySelector('#ad0').dataset.state==='ready');
+  assert(await test.page.evaluate(()=>window.fixtureForged)===undefined&&await test.page.locator('#ad1').getAttribute('data-started')===null&&await test.page.locator('#ad2').getAttribute('data-started')===null,'slots without this response token are never mounted or executed');await test.page.close();
+  // Re-showing the CMP dialog with an unchanged decision must not reload the page.
+  test=await setup([payload()],{cmp:granted});
+  await test.page.waitForFunction(()=>document.querySelector('#ad0').dataset.state==='ready');
+  await test.page.evaluate(()=>{window.fixtureNoReload=true;});
+  await test.page.evaluate(granted=>window.fixtureConsentCallback({...granted,eventStatus:'cmpuishown'},true),granted);await test.page.waitForTimeout(300);
+  assert(await test.page.evaluate(()=>window.fixtureNoReload===true),'reopening the CMP dialog keeps the page and its ads');
+  await test.page.evaluate(granted=>window.fixtureConsentCallback({...granted,eventStatus:'useractioncomplete',purpose:{consents:{1:false,3:false,4:false}}},true),granted);
+  await test.page.waitForFunction(()=>window.fixtureNoReload!==true);
+  assert(true,'withdrawn consent after the dialog still reloads to remove the provider runtime');await test.page.close();
+  // Without the theme's inline configuration (for example blocked by a content security policy),
+  // elements that page content names "shikiAdsConfig" must never act as the configuration.
+  {
+    const page=await context.newPage();const errors=[];page.on('pageerror',error=>errors.push(error.message));
+    await page.route('**/*',async route=>{providerRequests++;await route.abort();});
+    await page.setContent('<a id="shikiAdsConfig"></a><a id="shikiAdsConfig" name="live" href="#"></a><a id="shikiAdsConfig" name="auto" href="#"></a>'+markup([payload({code:'<script>window.fixtureForged=3</script>'})]));
+    await page.addScriptTag({content:js});await page.waitForTimeout(200);
+    const state=await page.evaluate(()=>({clobbered:window.shikiAdsConfig instanceof HTMLCollection,live:window.googlefc!==undefined,forged:window.fixtureForged}));
+    assert(state.clobbered&&!state.live&&state.forged===undefined&&await page.locator('#ad0').getAttribute('data-started')===null&&errors.length===0,'a configuration named only by page markup is ignored');await page.close();
+  }
   assert(providerRequests===0,'no real advertising, CMP, or affiliate service was contacted');
 }catch(error){results.push({name:'exception',pass:false,error:error.message});}
 finally{await browser.close();}

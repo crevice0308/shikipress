@@ -25,9 +25,15 @@ try{
  $restore=reset($revisions);wp_restore_post_revision($restore->ID);
  $assert(get_post_field('post_name',$post)===$slug,'Revision restore preserves published URL');
  $assert(wp_get_post_categories($post)===$terms,'Revision restore preserves manual classification');
+ // Revisions and autosaves never change public output, so they must not purge the public caches.
+ $epoch=(int)get_option('shikipress_cache_epoch');
  require_once ABSPATH.'wp-admin/includes/post.php';$autosave=wp_create_post_autosave(['post_ID'=>$post,'post_type'=>'post','post_title'=>'TEST autosaved autumn','post_content'=>'TEST autosaved']);
  $assert(!is_wp_error($autosave)&&is_numeric($autosave),'Core creates autosave revision');
+ $extra=_wp_put_post_revision($post);$assert($extra&&!is_wp_error($extra)&&wp_is_post_revision($extra)===$post,'Core stores another revision');
+ $assert((int)get_option('shikipress_cache_epoch')===$epoch,'Autosave and revision saves keep the public caches');
  $assert(get_post_field('post_name',$post)===$slug,'Autosave preserves URL');
  $assert(wp_get_post_categories($post)===$terms,'Autosave preserves manual classification');
+ wp_update_post(['ID'=>$post,'post_content'=>'TEST saved content']);
+ $assert((int)get_option('shikipress_cache_epoch')>$epoch,'Saving the post itself still invalidates the public caches');
  echo wp_json_encode($checks,JSON_UNESCAPED_UNICODE|JSON_PRETTY_PRINT).PHP_EOL;echo 'LIFECYCLE_TOTAL '.count($checks).PHP_EOL;
 }finally{foreach($created as$id){wp_delete_post($id,true);}update_option('shikipress_settings',$settings);wp_set_current_user($old_user);}

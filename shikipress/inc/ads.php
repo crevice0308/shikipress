@@ -131,6 +131,12 @@ function shiki_ads_page_allowed(array $slot): bool {
     } else { return false; }
     return true;
 }
+/** One token per response: ads.js only mounts slots carrying it, never markup stored in post content. */
+function shiki_ads_render_token(): string {
+    static $token = null;
+    if (null === $token) { $token = wp_generate_password(32, false, false); }
+    return $token;
+}
 function shiki_ads_render_slot(array $slot, bool $count = true): string {
     static $counts = []; static $total = 0; static $instance = 0;
     $mode = shiki_option('ads_mode', 'test');
@@ -139,7 +145,7 @@ function shiki_ads_render_slot(array $slot, bool $count = true): string {
     if ($count && (($counts[$id] ?? 0) >= ($slot['limit'] ?? 1) || $total >= shiki_option('ads_limit', 5))) { return ''; }
     if ($count) { $counts[$id] = ($counts[$id] ?? 0) + 1; $total++; }
     $production = 'production' === $mode && 'production' === ($slot['state'] ?? '') && shiki_ads_environment_allowed();
-    $payload = ['service' => $slot['service'] ?? 'generic', 'device' => $slot['device'] ?? 'all', 'mode' => $production ? 'production' : 'test', 'dummy' => $slot['dummy'] ?? 'ready', 'minWidth' => max(0, min(2000, absint($slot['min_width'] ?? 0)))];
+    $payload = ['token' => shiki_ads_render_token(), 'service' => $slot['service'] ?? 'generic', 'device' => $slot['device'] ?? 'all', 'mode' => $production ? 'production' : 'test', 'dummy' => $slot['dummy'] ?? 'ready', 'minWidth' => max(0, min(2000, absint($slot['min_width'] ?? 0)))];
     if ($production) {
         $payload += ['publisher' => ($slot['publisher'] ?? '') ?: shiki_option('ads_publisher', ''), 'adSlot' => $slot['ad_slot'] ?? '', 'vendors' => $slot['vendors'] ?? [], 'purposes' => $slot['purposes'] ?? [1,3,4], 'sharedLoaders' => $slot['shared_loaders'] ?? []];
         if ('adsense' !== $payload['service']) {
@@ -163,14 +169,91 @@ function shiki_ads_named_slot(string $id): string {
     return '';
 }
 
-/** Insert only between top-level blocks; classic HTML is parsed before insertion. */
-add_filter('the_content', function ($content) {
-    if (!is_singular() || !in_the_loop() || !is_main_query() || is_admin() || is_feed() || is_preview()) { return $content; }
-    $slots = array_filter((array) shiki_option('ads_slots', []), function ($slot) { return is_array($slot) && in_array($slot['position'] ?? '', ['middle','before_h2','after_h2'], true); });
+/** Only the queried post's own content in the main loop; never excerpts or other posts rendered inside it. */
+function shiki_ads_content_context(): bool {
+    return is_singular() && in_the_loop() && is_main_query() && !is_admin() && !is_feed() && !is_preview()
+        && !doing_filter('get_the_excerpt') && (int) get_the_ID() === (int) get_queried_object_id();
+}
+function shiki_ads_content_slots(): array {
+    if ('off' === shiki_option('ads_mode', 'test')) { return []; } // Disabled ads never touch the post markup.
+    $slots = array_filter((array) shiki_option('ads_slots', []), function ($slot) { return is_array($slot) && 'off' !== ($slot['state'] ?? 'off') && in_array($slot['position'] ?? '', ['middle','before_h2','after_h2'], true); });
     // Stored intervals are validated on save; keep the modulo defined for any legacy or imported value.
     foreach ($slots as &$slot) { $slot['interval'] = max(1, (int) ($slot['interval'] ?? 3)); } unset($slot);
-    $body = $content;
-    if ($slots && has_blocks($content)) {
+    return $slots;
+}
+/** Pairs the early and late filters of one the_content call; nested calls in between stay balanced. */
+function shiki_ads_classic_pending(?bool $push = null): bool {
+    static $stack = [];
+    if (null !== $push) { $stack[] = $push; return $push; }
+    return (bool) array_pop($stack);
+}
+/**
+ * Inserts mid-content ads between top-level elements of rendered classic HTML.
+ * The markup is never re-serialised: depth-0 opening tags get a temporary marker
+ * attribute, which is then replaced by the ads. Returns null when unverifiable.
+ */
+function shiki_ads_insert_classic(string $html, array $slots): ?string {
+    if (!class_exists('WP_HTML_Tag_Processor') || str_contains($html, 'data-shiki-ad-mark')) { return null; }
+    static $void = null, $atomic, $closes_p, $siblings, $paragraph_like;
+    if (null === $void) {
+        $void = array_fill_keys(['AREA','BASE','BASEFONT','BGSOUND','BR','COL','EMBED','FRAME','HR','IMG','INPUT','KEYGEN','LINK','META','PARAM','SOURCE','TRACK','WBR'], true);
+        $atomic = array_fill_keys(['SCRIPT','STYLE','TEXTAREA','TITLE','IFRAME','NOEMBED','NOFRAMES','XMP'], true);
+        $closes_p = array_fill_keys(['ADDRESS','ARTICLE','ASIDE','BLOCKQUOTE','DETAILS','DIALOG','DIV','DL','FIELDSET','FIGCAPTION','FIGURE','FOOTER','FORM','H1','H2','H3','H4','H5','H6','HEADER','HGROUP','HR','MAIN','MENU','NAV','OL','P','PRE','SECTION','TABLE','UL'], true);
+        $siblings = array_fill_keys(['LI','DT','DD','TR','TD','TH','OPTION'], true);
+        $paragraph_like = array_fill_keys(['P','FIGURE','TABLE'], true);
+    }
+    $token = 'shiki' . strtolower(wp_generate_password(12, false, false));
+    $tags = new WP_HTML_Tag_Processor($html);
+    $stack = []; $items = []; $closed = [];
+    while ($tags->next_token()) {
+        if ('#tag' !== $tags->get_token_type()) { continue; }
+        $name = (string) $tags->get_tag();
+        if ($tags->is_tag_closer()) {
+            for ($at = count($stack) - 1; $at >= 0 && $stack[$at] !== $name; $at--) {}
+            if ($at < 0) { continue; } // Stray end tags are ignored, as in browsers.
+            array_splice($stack, $at);
+            if (!$stack && $items) { $closed[count($items) - 1] = true; }
+            continue;
+        }
+        // Implied end tags that matter for top-level boundaries.
+        if ($stack && (('P' === end($stack) && isset($closes_p[$name])) || (isset($siblings[$name]) && end($stack) === $name))) {
+            array_pop($stack);
+            if (!$stack && $items) { $closed[count($items) - 1] = true; }
+        }
+        $foreign = in_array('SVG', $stack, true) || in_array('MATH', $stack, true) || in_array($name, ['SVG','MATH'], true);
+        $leaf = isset($void[$name]) || isset($atomic[$name]) || ($foreign && $tags->has_self_closing_flag());
+        if (!$stack) {
+            if (!$tags->set_attribute('data-shiki-ad-mark', $token . '-' . count($items))) { return null; }
+            $items[] = $name;
+            if ($leaf) { $closed[count($items) - 1] = true; }
+        }
+        if (!$leaf) { $stack[] = $name; }
+    }
+    if ($tags->paused_at_incomplete_token() || !$items) { return null; }
+    $marked = $tags->get_updated_html();
+    $pattern = '/<([^\s\/>]+) data-shiki-ad-mark="' . $token . '-([0-9]+)"/';
+    if (count($items) !== preg_match_all($pattern, $marked)) { return null; }
+    // Same evaluation order as the block path: before-H2 ads, then after-H2/middle ads.
+    $before = array_fill(0, count($items) + 1, ''); $paragraphs = 0; $headings = 0;
+    foreach ($items as $index => $name) {
+        $h2 = 'H2' === $name; $para = isset($paragraph_like[$name]);
+        if ($h2) { $headings++; }
+        foreach ($slots as $slot) { if ($h2 && 'before_h2' === $slot['position'] && 0 === $headings % $slot['interval']) { $before[$index] .= shiki_ads_render_slot($slot); } }
+        if (empty($closed[$index])) { continue; } // Never place an ad inside an element left open by the content.
+        if ($para) { $paragraphs++; }
+        foreach ($slots as $slot) { if (($h2 && 'after_h2' === $slot['position'] && 0 === $headings % $slot['interval']) || ($para && 'middle' === $slot['position'] && 0 === $paragraphs % $slot['interval'])) { $before[$index + 1] .= shiki_ads_render_slot($slot); } }
+    }
+    $body = preg_replace_callback($pattern, function ($match) use ($before) { return $before[(int) $match[2]] . '<' . $match[1]; }, $marked);
+    return is_string($body) ? $body . $before[count($items)] : null;
+}
+
+/** Block content: insert between top-level blocks before rendering. Classic content: insert after wpautop and shortcodes. */
+add_filter('the_content', function ($content) {
+    if (!shiki_ads_content_context()) { shiki_ads_classic_pending(false); return $content; }
+    if (!has_blocks($content)) { shiki_ads_classic_pending(true); return $content; }
+    shiki_ads_classic_pending(false);
+    $slots = shiki_ads_content_slots(); $body = $content;
+    if ($slots) {
         $parts = parse_blocks($content); $body = ''; $paragraphs = 0; $headings = 0;
         foreach ($parts as $part) {
             $h2 = 'core/heading' === $part['blockName'] && 2 === (int) ($part['attrs']['level'] ?? 2);
@@ -184,31 +267,21 @@ add_filter('the_content', function ($content) {
                 if (($h2 && 'after_h2' === $slot['position'] && 0 === $headings % $slot['interval']) || ('middle' === $slot['position'] && in_array($part['blockName'], ['core/paragraph','core/image','core/table'], true) && 0 === $paragraphs % $slot['interval'])) { $body .= shiki_ads_render_slot($slot); }
             }
         }
-    } elseif ($slots && class_exists('DOMDocument') && !str_contains($content, '<!-- wp:')) {
-        $doc = new DOMDocument(); $prior = libxml_use_internal_errors(true);
-        $loaded = $doc->loadHTML('<?xml encoding="UTF-8"><div id="shiki-ad-content-root">' . $content . '</div>', LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD | LIBXML_NONET);
-        libxml_clear_errors(); libxml_use_internal_errors($prior);
-        $root = $doc->getElementById('shiki-ad-content-root');
-        if ($loaded && $root) {
-            $body = ''; $paragraphs = 0; $headings = 0;
-            foreach ($root->childNodes as $node) {
-                $h2 = $node instanceof DOMElement && 'h2' === strtolower($node->tagName); $para = $node instanceof DOMElement && 'p' === strtolower($node->tagName);
-                if ($h2) { $headings++; }
-                foreach ($slots as $slot) { if ($h2 && 'before_h2' === $slot['position'] && 0 === $headings % $slot['interval']) { $body .= shiki_ads_render_slot($slot); } }
-                $body .= $doc->saveHTML($node);
-                if ($para) { $paragraphs++; }
-                foreach ($slots as $slot) { if (($h2 && 'after_h2' === $slot['position'] && 0 === $headings % $slot['interval']) || ($para && 'middle' === $slot['position'] && 0 === $paragraphs % $slot['interval'])) { $body .= shiki_ads_render_slot($slot); } }
-            }
-        }
     }
     return shiki_ad_html('above') . $body . shiki_ad_html('below');
 }, 8);
+add_filter('the_content', function ($content) {
+    if (!shiki_ads_classic_pending() || !shiki_ads_content_context()) { return $content; }
+    $slots = shiki_ads_content_slots();
+    $body = $slots ? (shiki_ads_insert_classic($content, $slots) ?? $content) : $content;
+    return shiki_ad_html('above') . $body . shiki_ad_html('below');
+}, 11);
 
 add_action('wp_enqueue_scripts', function () {
     wp_register_style('shiki-ads', get_template_directory_uri() . '/assets/ads.css', [], SHIKI_VERSION);
     wp_register_script('shiki-ads', get_template_directory_uri() . '/assets/ads.js', [], SHIKI_VERSION, true);
     $live = 'production' === shiki_option('ads_mode', 'test') && shiki_ads_environment_allowed() && shiki_ads_page_allowed(['post_types' => ['post','page']]);
-    $cfg = ['live' => $live, 'cmpId' => absint(shiki_option('ads_cmp_id', 0)), 'auto' => $live && (bool) shiki_option('ads_auto', false), 'publisher' => $live ? shiki_option('ads_publisher', '') : '', 'cmpCode' => ''];
+    $cfg = ['live' => $live, 'cmpId' => absint(shiki_option('ads_cmp_id', 0)), 'auto' => $live && (bool) shiki_option('ads_auto', false), 'publisher' => $live ? shiki_option('ads_publisher', '') : '', 'cmpCode' => '', 'slotToken' => shiki_ads_render_token()];
     if ($live && shiki_option('ads_cmp_enabled', false) && shiki_option('ads_cmp_trusted', false)) { $cfg['cmpCode'] = base64_encode((string) shiki_option('ads_cmp_code', '')); }
     wp_add_inline_script('shiki-ads', 'window.shikiAdsConfig=' . wp_json_encode($cfg, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) . ';', 'before');
     if ($live && (shiki_option('ads_auto', false) || '' !== $cfg['cmpCode'])) { wp_enqueue_script('shiki-ads'); }

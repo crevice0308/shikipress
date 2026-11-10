@@ -228,9 +228,24 @@ function shiki_toc($content) {
     return $toc . '</ol></details>' . $content;
 }
 add_filter('the_content', function ($content) {
-    if (!is_admin() && is_singular() && in_the_loop() && is_main_query() && !post_password_required()) { return shiki_toc($content); }
+    // Only the queried post's own body: never an automatic excerpt (which would start with
+    // the list of headings) or another post rendered inside it (which would repeat anchor IDs).
+    if (!is_admin() && is_singular() && in_the_loop() && is_main_query() && !post_password_required()
+        && !doing_filter('get_the_excerpt') && (int) get_the_ID() === (int) get_queried_object_id()) { return shiki_toc($content); }
     return $content;
 }, 12);
+
+/**
+ * Core's password form is complete markup. Since WordPress 6.8 it begins with a hidden
+ * field, after which wpautop() leaves a stray </p> inside the form. Group the leading
+ * hidden fields in a block element so the paragraphs stay balanced. The fields, their
+ * values and the rest of the form are untouched; an unrecognised form is returned as is.
+ */
+add_filter('the_password_form', function ($form) {
+    if (!is_string($form) || '' === $form) { return $form; }
+    $grouped = preg_replace('~(<form\b[^>]*>)((?:\s*<input\b[^>]*\btype=(["\'])hidden\3[^>]*>)+)~i', '$1<div hidden>$2</div>', $form, 1);
+    return is_string($grouped) ? $grouped : $form;
+}, 20);
 
 add_filter('wp_nav_menu_objects', function ($items) {
     $public_page_ids = array_map(function ($page) { return $page->ID; }, shiki_public_pages());
