@@ -19,8 +19,18 @@ $replace = static function ($same_title) use (&$id, &$replacement, $job) {
     update_post_meta($id, '_shiki_translation', $replacement);
     wp_schedule_single_event(time() + 1, 'shiki_translate_job', array($id, 'replacement-fixture'));
 };
-$claim_interleave = static function ($name) use (&$lock, $scenario, $replace) {
-    if ($scenario === 'replace-before-claim' && $name === $lock) { $replace(true); }
+// The worker creates its lock with an insert-only query, which fires no option hook. Its next
+// write is the claim itself, so the replacement arrives at the start of that metadata update:
+// after the lock was taken and before the compare-and-swap reaches the database.
+$claim_seen = false; $lock_held_at_claim = false;
+$claim_interleave = static function ($check_value, $object_id, $key, $value) use (&$id, &$lock, &$claim_seen, &$lock_held_at_claim, $scenario, $replace) {
+    if ($scenario !== 'replace-before-claim' || $claim_seen || $object_id !== $id || $key !== '_shiki_translation' || !is_array($value) || ($value['state'] ?? '') !== 'working') { return $check_value; }
+    $claim_seen = true;
+    wp_cache_delete($lock, 'options'); wp_cache_delete('notoptions', 'options');
+    $held = get_option($lock, array());
+    $lock_held_at_claim = is_array($held) && !empty($held['token']);
+    $replace(true);
+    return $check_value;
 };
 $mock = static function ($pre, $http_args, $url) use (&$http_calls, $scenario, $replace) {
     if ($url !== 'https://api-free.deepl.com/v2/translate') { return new WP_Error('fixture-network-blocked', 'No real HTTP in this fixture.'); }
@@ -32,7 +42,7 @@ $mock = static function ($pre, $http_args, $url) use (&$http_calls, $scenario, $
 $status_interleave = null; $json_die = null;
 add_filter('pre_http_request', $mock, PHP_INT_MAX, 3);
 add_filter('pre_wp_mail', '__return_true', PHP_INT_MAX);
-add_action('added_option', $claim_interleave);
+add_filter('update_post_metadata', $claim_interleave, 5, 4);
 try {
     wp_set_current_user(1);
     update_option('shikipress_settings', array_merge($settings, array('deepl_enabled' => true, 'deepl_plan' => 'free', 'classification_mode' => 'suggest', 'slug_mode' => 'suggest')));
@@ -80,7 +90,8 @@ try {
         $check(!wp_next_scheduled('shiki_translate_job', array($id, 'original-fixture')), 'Stale worker must not schedule retry');
         $check($http_calls === ($scenario === 'replace-before-claim' ? 0 : 1), 'Only owned claim may send HTTP');
         $check(!get_option($lock), 'Owned lock released');
-        remove_action('added_option', $claim_interleave);
+        if ($scenario === 'replace-before-claim') { $check($claim_seen && $lock_held_at_claim, 'Replacement arrived while the worker held its lock, before the claim'); }
+        remove_filter('update_post_metadata', $claim_interleave, 5);
         wp_clear_scheduled_hook('shiki_translate_job', array($id, 'replacement-fixture'));
         do_action('shiki_translate_job', $id, 'replacement-fixture');
         $latest = get_post_meta($id, '_shiki_translation', true);
@@ -106,7 +117,7 @@ try {
     }
 } finally {
     remove_filter('pre_http_request', $mock, PHP_INT_MAX); remove_filter('pre_wp_mail', '__return_true', PHP_INT_MAX);
-    remove_action('added_option', $claim_interleave);
+    remove_filter('update_post_metadata', $claim_interleave, 5);
     if ($status_interleave) { remove_filter('update_post_metadata', $status_interleave, 10); }
     if ($json_die) { remove_filter('wp_die_ajax_handler', $json_die); }
     if ($id && !is_wp_error($id)) {

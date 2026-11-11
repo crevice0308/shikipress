@@ -2,7 +2,7 @@
 
 `run-ci.sh` installs a new disposable WordPress with a uniquely named local MySQL database, installs the built theme ZIP, seeds the development fixtures (`scripts/fixtures.php 20`) and runs the theme's real-WordPress suites:
 
-`core`, `frontend`, `seo`, `ads`, `public-scope`, `automation`, `tools`, `lifecycle`, `media` (`tests/*-integration.php`).
+`core`, `frontend`, `seo`, `ads`, `public-scope`, `automation`, `tools`, `lifecycle`, `media`, `regression` (`tests/*-integration.php`).
 
 The workflow job `theme-suites` in `.github/workflows/compatibility.yml` runs it on the declared minimum (WordPress 6.6 / PHP 8.2) and on the current WordPress release with the newest tested PHP. It uses the same loopback origin and reading settings as `scripts/setup-dev.sh`.
 

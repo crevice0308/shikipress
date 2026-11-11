@@ -78,6 +78,9 @@ function shiki_seo_paged_url($base, $number) {
 function shiki_seo_canonical() {
     if (is_404() || is_preview()) { return ''; }
     if (get_query_var('shiki_stories') && function_exists('shiki_stories_url')) { return shiki_stories_url(max(1, (int) get_query_var('paged'))); }
+    // front-page.php renders the same curated home for /page/N/, also when a static page is the front
+    // page (core would name a non-existent /N/ for it); the paginated list lives at shiki_stories.
+    if (is_front_page()) { return home_url('/'); }
     if (is_singular()) {
         $url = wp_get_canonical_url(get_queried_object_id());
         if (!$url) { return ''; }
@@ -87,8 +90,6 @@ function shiki_seo_canonical() {
         }
         return $url;
     }
-    // front-page.php renders the same curated home for /page/N/; the paginated list lives at shiki_stories.
-    if (is_front_page()) { return home_url('/'); }
     $base = '';
     if (is_home()) { $id = (int) get_option('page_for_posts'); $base = $id ? get_permalink($id) : home_url('/'); }
     elseif (is_search()) { $base = get_search_link(get_search_query(false)); }
@@ -317,7 +318,8 @@ function shiki_seo_public_term_ids($taxonomy) {
     $hidden = 'category' === $taxonomy ? array_map('absint', (array) shiki_option('category_exclude', [])) : [];
     return array_values(array_filter(array_map('absint', $terms), function ($id) use ($hidden) { return !in_array($id, $hidden, true) && '1' !== (string) get_term_meta($id, '_shiki_noindex', true); }));
 }
-add_filter('wp_sitemaps_taxonomies_query_args', function ($args, $taxonomy) { if (in_array($taxonomy, ['category', 'post_tag'], true)) { $args['include'] = shiki_seo_public_term_ids($taxonomy) ?: [0]; } return $args; }, 20, 2);
+// "include => [0]" lists every term before WordPress 6.9; shiki_no_term_ids() matches none on all versions.
+add_filter('wp_sitemaps_taxonomies_query_args', function ($args, $taxonomy) { if (in_array($taxonomy, ['category', 'post_tag'], true)) { $args['include'] = shiki_seo_public_term_ids($taxonomy) ?: shiki_no_term_ids(); } return $args; }, 20, 2);
 
 function shiki_html_sitemap($attributes = []) {
     $per_page = max(10, min(100, absint(shiki_option('seo_sitemap_per_page', 50))));
@@ -373,7 +375,7 @@ add_action('save_post', function ($id = 0, $post = null) {
     $image = absint($_POST['_shiki_og_image'] ?? 0);
     update_post_meta($id, '_shiki_og_image', $image && wp_attachment_is_image($image) && current_user_can('edit_post', $image) ? $image : 0);
     update_post_meta($id, '_shiki_noindex', empty($_POST['_shiki_noindex']) ? '0' : '1');
-    if (function_exists('shiki_invalidate_cache')) { shiki_invalidate_cache(); }
+    if (function_exists('shiki_invalidate_cache_for_post')) { shiki_invalidate_cache_for_post($id, $post); }
 }, 20, 2);
 function shiki_seo_term_fields($term = null) {
     $id = $term instanceof WP_Term ? $term->term_id : 0;

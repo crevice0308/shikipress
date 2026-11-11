@@ -33,6 +33,10 @@ function shiki_ads_services(): array {
 function shiki_ads_positions(): array {
     return ['above' => '記事上', 'before_h2' => 'H2の前（最上位ブロック境界のみ）', 'after_h2' => 'H2の後（最上位ブロック境界のみ）', 'middle' => '本文中（段落・ブロックの後）', 'below' => '記事下', 'sidebar' => 'サイドバー', 'footer' => 'フッター', 'manual' => '広告ブロック専用'];
 }
+/** The extra row the settings screen offers for a new slot, in its stored form. */
+function shiki_ads_blank_slot(string $id): array {
+    return ['id' => $id, 'name' => '新しい広告枠', 'service' => 'adsense', 'state' => 'off', 'position' => 'below', 'device' => 'all', 'post_types' => ['post'], 'exclude_ids' => [], 'exclude_categories' => [], 'interval' => 3, 'limit' => 1, 'height' => 250, 'min_width' => 0, 'dummy' => 'ready', 'publisher' => '', 'ad_slot' => '', 'code' => '', 'trusted' => false, 'vendors' => [755], 'purposes' => [1, 3, 4], 'shared_loaders' => []];
+}
 function shiki_ads_ids($value): array {
     if (!is_array($value)) { $value = is_scalar($value) ? preg_split('/[\s,]+/', (string) $value) : []; }
     return array_values(array_unique(array_filter(array_map('absint', array_filter($value, 'is_scalar')))));
@@ -109,6 +113,9 @@ add_filter('shiki_sanitize_settings', function ($out, $input, $section) {
             'vendors' => shiki_ads_ids($row['vendors'] ?? ('adsense' === $service ? [755] : [])),
             'purposes' => shiki_ads_ids($row['purposes'] ?? [1,3,4]), 'shared_loaders' => array_values(array_unique($loaders)),
         ];
+        // The screen always offers one extra row. Saved exactly as offered, it is not a slot the
+        // administrator created; storing it would add another disabled slot on every save.
+        if (!$old && !empty($row['template']) && $slots[$id] == shiki_ads_blank_slot($id)) { unset($slots[$id]); }
     }
     $out['ads_slots'] = array_values($slots);
     if (!$out['ads_live_approved']) { $out['ads_mode'] = 'production' === $out['ads_mode'] ? 'test' : $out['ads_mode']; }
@@ -165,7 +172,8 @@ function shiki_ad_html(string $position): string {
 }
 function shiki_ad(string $position): void { echo shiki_ad_html($position); /* HTML escaped at source. */ }
 function shiki_ads_named_slot(string $id): string {
-    foreach ((array) shiki_option('ads_slots', []) as $slot) { if (($slot['id'] ?? '') === $id) { return shiki_ads_render_slot($slot); } }
+    if ('' === $id) { return ''; }
+    foreach ((array) shiki_option('ads_slots', []) as $slot) { if (is_array($slot) && ($slot['id'] ?? '') === $id) { return shiki_ads_render_slot($slot); } }
     return '';
 }
 
@@ -296,9 +304,17 @@ add_action('init', function () {
     wp_register_script('shiki-ad-editor', get_template_directory_uri() . '/assets/ad-editor.js', ['wp-blocks','wp-element','wp-components','wp-block-editor'], SHIKI_VERSION, true);
     register_block_type('shikipress/ad-slot', ['api_version' => 3, 'editor_script' => 'shiki-ad-editor', 'attributes' => ['slot' => ['type' => 'string', 'default' => '']], 'render_callback' => function ($attrs) { return shiki_ads_named_slot(sanitize_key($attrs['slot'] ?? '')); }]);
 });
+/** Choices of the editor's slot block; damaged rows are left out. */
+function shiki_ads_editor_slots(): array {
+    $slots = [];
+    foreach ((array) shiki_option('ads_slots', []) as $slot) {
+        if (!is_array($slot) || !is_string($slot['id'] ?? null) || '' === $slot['id']) { continue; }
+        $slots[] = ['value' => $slot['id'], 'label' => is_string($slot['name'] ?? null) && '' !== $slot['name'] ? $slot['name'] : $slot['id']];
+    }
+    return $slots;
+}
 add_action('enqueue_block_editor_assets', function () {
-    $slots = []; foreach ((array) shiki_option('ads_slots', []) as $slot) { $slots[] = ['value' => $slot['id'], 'label' => $slot['name']]; }
-    wp_add_inline_script('shiki-ad-editor', 'window.shikiAdSlots=' . wp_json_encode($slots, JSON_HEX_TAG | JSON_HEX_AMP) . ';', 'before');
+    wp_add_inline_script('shiki-ad-editor', 'window.shikiAdSlots=' . wp_json_encode(shiki_ads_editor_slots(), JSON_HEX_TAG | JSON_HEX_AMP) . ';', 'before');
 });
 
 /** Local read only diagnostics: never writes or overwrites ads.txt and never fetches arbitrary URLs. */
@@ -316,7 +332,8 @@ function shiki_ads_admin_select(string $name, string $current, array $choices): 
     echo '</select>';
 }
 function shiki_ads_admin_field(string $label, string $name, $value, string $type = 'text'): void {
-    echo '<label class="shiki-ads-field">' . esc_html($label) . '<input type="' . esc_attr($type) . '" name="' . esc_attr($name) . '" value="' . esc_attr(is_array($value) ? implode(',', $value) : (string) $value) . '"></label>';
+    $value = is_array($value) ? implode(',', array_filter($value, 'is_scalar')) : (is_scalar($value) ? (string) $value : '');
+    echo '<label class="shiki-ads-field">' . esc_html($label) . '<input type="' . esc_attr($type) . '" name="' . esc_attr($name) . '" value="' . esc_attr($value) . '"></label>';
 }
 function shiki_ads_admin_check(string $label, string $name, bool $checked): void {
     echo '<label class="shiki-ads-check"><input type="checkbox" name="' . esc_attr($name) . '" value="1"' . checked($checked, true, false) . '> ' . esc_html($label) . '</label>';
@@ -343,18 +360,26 @@ add_action('shiki_admin_tab_ads', function () {
     } else { echo '<p>コード編集にはunfiltered_html権限が必要です（マルチサイトでは通常スーパー管理者）。</p>'; }
     shiki_ads_admin_check('本番時にCMP専用コードを読み込む', 'shikipress_settings[ads_cmp_enabled]', (bool) shiki_option('ads_cmp_enabled'));
     echo '<p><a href="https://support.google.com/adsense/answer/13554116?hl=ja" target="_blank" rel="noopener noreferrer">Google認定CMP・地域要件</a> / <a href="https://developers.google.com/funding-choices/fc-api-docs?hl=ja" target="_blank" rel="noopener noreferrer">Google公式API</a></p></details><h3>広告枠</h3>';
-    $slots = (array) shiki_option('ads_slots', []);
-    $slots[] = ['id' => 'slot-' . (count($slots) + 1), 'name' => '新しい広告枠', 'service' => 'adsense', 'state' => 'off', 'position' => 'below', 'device' => 'all', 'post_types' => ['post'], 'interval' => 3, 'limit' => 1, 'height' => 250, 'vendors' => [755], 'purposes' => [1,3,4]];
+    $slots = array_values(array_filter((array) shiki_option('ads_slots', []), 'is_array'));
+    if (count($slots) < 24) {
+        // The extra row needs an ID no saved slot uses, also after an earlier slot was deleted;
+        // a repeated ID would be dropped on save together with everything entered in the row.
+        $used = array_map(static fn($slot) => is_scalar($slot['id'] ?? null) ? (string) $slot['id'] : '', $slots); $number = count($slots) + 1;
+        while (in_array('slot-' . $number, $used, true)) { $number++; }
+        $slots[] = shiki_ads_blank_slot('slot-' . $number) + ['template' => true];
+    }
     foreach ($slots as $index => $slot) {
         $prefix = 'shikipress_settings[ads_slots][' . $index . ']';
-        echo '<details class="shiki-ads-slot"><summary>' . esc_html($slot['name'] ?? $slot['id']) . '</summary><div class="shiki-ads-grid">';
-        shiki_ads_admin_field('枠ID（半角英数・ハイフン）', $prefix . '[id]', $slot['id']);
-        shiki_ads_admin_field('管理名', $prefix . '[name]', $slot['name'] ?? '');
-        echo '<label>サービス '; shiki_ads_admin_select($prefix . '[service]', $slot['service'] ?? 'adsense', shiki_ads_services()); echo '</label>';
-        echo '<label>状態 '; shiki_ads_admin_select($prefix . '[state]', $slot['state'] ?? 'off', ['off'=>'無効','test'=>'テスト','production'=>'本番']); echo '</label>';
-        echo '<label>配置 '; shiki_ads_admin_select($prefix . '[position]', $slot['position'] ?? 'below', shiki_ads_positions()); echo '</label>';
-        echo '<label>端末 '; shiki_ads_admin_select($prefix . '[device]', $slot['device'] ?? 'all', ['all'=>'全端末','mobile'=>'767px以下','desktop'=>'768px以上']); echo '</label>';
-        echo '<label>ダミー動作 '; shiki_ads_admin_select($prefix . '[dummy]', $slot['dummy'] ?? 'ready', ['ready'=>'通常','delay'=>'2秒遅延','no-fill'=>'未配信','failure'=>'読み込み失敗']); echo '</label>';
+        $text = static fn(string $key, string $fallback = '') => is_scalar($slot[$key] ?? null) ? (string) $slot[$key] : $fallback;
+        echo '<details class="shiki-ads-slot"><summary>' . esc_html($text('name', $text('id'))) . '</summary><div class="shiki-ads-grid">';
+        if (!empty($slot['template'])) { echo '<input type="hidden" name="' . esc_attr($prefix . '[template]') . '" value="1">'; }
+        shiki_ads_admin_field('枠ID（半角英数・ハイフン）', $prefix . '[id]', $text('id'));
+        shiki_ads_admin_field('管理名', $prefix . '[name]', $text('name'));
+        echo '<label>サービス '; shiki_ads_admin_select($prefix . '[service]', $text('service', 'adsense'), shiki_ads_services()); echo '</label>';
+        echo '<label>状態 '; shiki_ads_admin_select($prefix . '[state]', $text('state', 'off'), ['off'=>'無効','test'=>'テスト','production'=>'本番']); echo '</label>';
+        echo '<label>配置 '; shiki_ads_admin_select($prefix . '[position]', $text('position', 'below'), shiki_ads_positions()); echo '</label>';
+        echo '<label>端末 '; shiki_ads_admin_select($prefix . '[device]', $text('device', 'all'), ['all'=>'全端末','mobile'=>'767px以下','desktop'=>'768px以上']); echo '</label>';
+        echo '<label>ダミー動作 '; shiki_ads_admin_select($prefix . '[dummy]', $text('dummy', 'ready'), ['ready'=>'通常','delay'=>'2秒遅延','no-fill'=>'未配信','failure'=>'読み込み失敗']); echo '</label>';
         shiki_ads_admin_field('挿入間隔（段落/H2数）', $prefix . '[interval]', $slot['interval'] ?? 3, 'number');
         shiki_ads_admin_field('同一ページ内の枠上限', $prefix . '[limit]', $slot['limit'] ?? 1, 'number');
         shiki_ads_admin_field('確保する高さ（80〜600px）', $prefix . '[height]', $slot['height'] ?? 250, 'number');
@@ -367,12 +392,13 @@ add_action('shiki_admin_tab_ads', function () {
         shiki_ads_admin_field('必要なTCF同意目的ID', $prefix . '[purposes]', $slot['purposes'] ?? [1,3,4]);
         echo '</div>';
         // Explicit values avoid ambiguous checkbox values for a list of post types.
-        echo '<label class="shiki-ads-field">投稿種別<select multiple name="' . esc_attr($prefix . '[post_types][]') . '"><option value="post"' . selected(in_array('post', $slot['post_types'] ?? ['post'], true), true, false) . '>投稿</option><option value="page"' . selected(in_array('page', $slot['post_types'] ?? [], true), true, false) . '>固定ページ</option></select></label>';
+        $post_types = is_array($slot['post_types'] ?? null) ? $slot['post_types'] : ['post'];
+        echo '<label class="shiki-ads-field">投稿種別<select multiple name="' . esc_attr($prefix . '[post_types][]') . '"><option value="post"' . selected(in_array('post', $post_types, true), true, false) . '>投稿</option><option value="page"' . selected(in_array('page', $post_types, true), true, false) . '>固定ページ</option></select></label>';
         if (current_user_can('unfiltered_html')) {
-            echo '<label class="shiki-ads-field">公式コード（AdSenseはレスポンシブ・ディスプレイのIDのみ取り込み。他社は公式HTML/非同期タグ）<textarea name="' . esc_attr($prefix . '[code]') . '" rows="6">' . esc_textarea($slot['code'] ?? '') . '</textarea></label>';
+            echo '<label class="shiki-ads-field">公式コード（AdSenseはレスポンシブ・ディスプレイのIDのみ取り込み。他社は公式HTML/非同期タグ）<textarea name="' . esc_attr($prefix . '[code]') . '" rows="6">' . esc_textarea($text('code')) . '</textarea></label>';
             shiki_ads_admin_check('この枠の外部HTML・JavaScript実行を許可（AdSense以外）', $prefix . '[trusted]', !empty($slot['trusted']));
         }
-        shiki_ads_admin_field('重複を防ぐ共通ローダーの完全HTTPS URL（空白区切り・公式仕様で確認）', $prefix . '[shared_loaders]', implode(' ', $slot['shared_loaders'] ?? []));
+        shiki_ads_admin_field('重複を防ぐ共通ローダーの完全HTTPS URL（空白区切り・公式仕様で確認）', $prefix . '[shared_loaders]', implode(' ', array_filter(is_array($slot['shared_loaders'] ?? null) ? $slot['shared_loaders'] : [], 'is_string')));
         shiki_ads_admin_check('この枠を削除', $prefix . '[delete]', false);
         echo '<p>枠ごとの外部scriptは削除しません。共通ローダーだけ指定してください。document.write依存の同期タグは未対応です。コードは管理画面では実行されません。</p></details>';
     }

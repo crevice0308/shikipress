@@ -3,7 +3,9 @@
     'use strict';
     const root = document.documentElement;
     root.classList.add('js');
-    const panels = Array.from(document.querySelectorAll('.nav-panel'));
+    // Only the theme's own panels (rendered after the footer) take part. Article markup may
+    // keep class and data-* attributes, and must not turn other parts of the page into a dialog.
+    const panels = Array.from(document.querySelectorAll('.nav-panel')).filter((panel) => !panel.closest('main'));
     const triggers = Array.from(document.querySelectorAll('[data-panel]'));
     const backdrop = document.querySelector('.panel-backdrop');
     const status = document.getElementById('shiki-status');
@@ -51,7 +53,7 @@
         announce(`${panel.querySelector('h2')?.textContent || 'パネル'}を開きました`);
     };
     panels.forEach((panel) => { panel.hidden = true; const close = panel.querySelector('.panel-close'); if (close) { close.hidden = false; close.addEventListener('click', () => closePanel()); } });
-    triggers.forEach((trigger) => trigger.addEventListener('click', (event) => { const panel = document.getElementById(trigger.dataset.panel); if (!panel) return; event.preventDefault(); openPanel(panel, trigger); }));
+    triggers.forEach((trigger) => trigger.addEventListener('click', (event) => { const panel = panels.find((item) => item.id === trigger.dataset.panel); if (!panel) return; event.preventDefault(); openPanel(panel, trigger); }));
     backdrop?.addEventListener('click', () => closePanel());
     document.addEventListener('keydown', (event) => {
         if (!active) return;

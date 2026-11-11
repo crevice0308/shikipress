@@ -1,8 +1,7 @@
 # ShikiPress module contract
-Root: /workspace/scratch/28f95e205fde/shikipress-project
 Theme root shikipress/. Classic hybrid theme with theme.json, Gutenberg styles.
 No external runtime dependencies. PHP >=8.2, WordPress >=6.6 (target actual downloaded stable).
-Prefix shiki_. Version SHIKI_VERSION=1.0.1.
+Prefix shiki_. Version: SHIKI_VERSION in functions.php, always equal to Version in style.css.
 Core functions in inc/core.php, loaded first:
 - shiki_defaults(): apply_filters('shiki_defaults', [flat key=>value]).
 - shiki_option($key,$default=null): merged defaults + get_option('shikipress_settings',[]).
@@ -10,9 +9,12 @@ Core functions in inc/core.php, loaded first:
 - shiki_public_posts($args=[]): WP_Query default publish, has_password false; exclude meta _shiki_exclude=1 (public listings), no filters suppression.
 - shiki_public_pages(): array published, unprotected, nonexcluded WP_Post, obey settings page_exclude IDs, page_priority IDs, menu_order.
 - shiki_invalidate_cache(): increment option shikipress_cache_epoch; action shiki_cache_invalidated.
+- shiki_invalidate_cache_for_post($post_id,$post=null): the same for a change to one post; only a published post or an attachment invalidates (an unresolvable post invalidates). Use it for saves, terms and metadata of one post; entering or leaving publication is handled by the transition_post_status hook in inc/core.php.
+- shiki_no_term_ids(): term "include" list that matches no term on every supported WordPress (never use [0]).
 Admin root menu shikipress, tab slugs dashboard/design/automation/navigation/ads/seo/diagnostics/backup. Root calls do_action('shiki_admin_tab_'.$tab). Each module callback renders complete forms using helpers or own admin-post forms, never nested forms.
 Core settings keys: season_mode=auto, season_fixed=autumn, timezone=Asia/Tokyo; page_exclude=[], page_priority=[], page_roles=[]; tabs=[home=>ホーム,categories=>カテゴリー,pages=>固定ページ,search=>検索]. Modules add own defaults via filter.
 Module responsibilities:
+- Locks: shiki_insert_lock_row($key,$value) in inc/automation.php is the only way to create a lock option (insert-only; never add_option()).
 - inc/automation.php: shiki_season(?DateTimeImmutable $date=null): spring/summer/autumn/winter; shiki_season_context(): [season,label,event]; shiki_season_terms(): season=>term ID; shiki_select_posts($context,$exclude=[],$limit=3,$post_id=0): WP_Post[] where contexts featured/related/popular; admin automation. Seasonal design admin root consumes module helper if needed. Module own cron and classifier/slugs/editor boxes.
 - inc/ads.php assets/ads.js + ads CSS if needed: shiki_ad($position) ECHO eligible slots; shiki_ad_html($position) RETURN html; own admin ads. Integrate content via filter. Ad block. Defaults safely test/off, no external requests during tests.
 - inc/seo.php: head, robots, XML exclusion, breadcrumbs shiki_breadcrumbs() echo, shiki_html_sitemap() shortcode. Admin SEO.

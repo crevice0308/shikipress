@@ -93,7 +93,7 @@ function shiki_card_image_sizes(int $columns = 3): string {
 
 function shiki_card($item, $heading_level = 3, $columns = 3) {
     $item = get_post($item);
-    if (!$item || $item->post_status !== 'publish' || $item->post_password !== '' || get_post_meta($item->ID, '_shiki_exclude', true)) { return; }
+    if (!$item || $item->post_status !== 'publish' || $item->post_password !== '' || '1' === (string) get_post_meta($item->ID, '_shiki_exclude', true)) { return; }
     if (function_exists('shiki_seo_is_public_post') && !shiki_seo_is_public_post($item)) { return; }
     $season = shiki_post_season($item->ID);
     $categories = get_the_category($item->ID);
@@ -113,7 +113,13 @@ function shiki_card($item, $heading_level = 3, $columns = 3) {
         <div class="card-content">
             <div class="card-meta"><?php if ($categories) { ?><span class="category-label"><?php echo esc_html($categories[0]->name); ?></span><span aria-hidden="true">·</span><?php } ?><time datetime="<?php echo esc_attr(get_the_date('c', $item)); ?>"><?php echo esc_html(get_the_date('Y.m.d', $item)); ?></time></div>
             <?php echo '<' . $heading_tag . ' class="card-title"><a href="' . esc_url(get_permalink($item)) . '">' . esc_html($title) . '</a></' . $heading_tag . '>'; ?>
-            <p class="card-excerpt"><?php echo esc_html(wp_trim_words(wp_strip_all_tags($item->post_excerpt ?: strip_shortcodes($item->post_content)), 46, '…')); ?></p>
+            <p class="card-excerpt"><?php
+            // wp_trim_words() counts characters only in locales that say so. On any other site
+            // language, Japanese text has no spaces to count and would be printed in full, so the
+            // result is also bounded in characters (46 words of spaced text stay below this bound).
+            $shiki_excerpt = wp_trim_words(wp_strip_all_tags($item->post_excerpt ?: strip_shortcodes($item->post_content)), 46, '…');
+            if (mb_strlen($shiki_excerpt) > 400) { $shiki_excerpt = mb_substr($shiki_excerpt, 0, 399) . '…'; }
+            echo esc_html($shiki_excerpt); ?></p>
         </div>
     </article>
     <?php
@@ -300,7 +306,9 @@ function shiki_design_admin() {
 add_action('shiki_admin_tab_design', 'shiki_design_admin');
 add_filter('shiki_sanitize_settings', function ($out, $input, $section) {
     if ($section !== 'design') { return $out; }
-    foreach (['hero_kicker', 'hero_title', 'hero_description'] as $key) { if (isset($input[$key])) { $out[$key] = sanitize_textarea_field($input[$key]); } }
+    // Browsers submit textarea line breaks as CRLF; keep the stored text in the LF form of the defaults,
+    // so that saving without a change never alters a value.
+    foreach (['hero_kicker', 'hero_title', 'hero_description'] as $key) { if (isset($input[$key])) { $out[$key] = str_replace(["\r\n", "\r"], "\n", sanitize_textarea_field($input[$key])); } }
     $out['toc_enabled'] = empty($input['toc_enabled']) ? 0 : 1;
     $out['show_popular'] = empty($input['show_popular']) ? 0 : 1;
     return $out;

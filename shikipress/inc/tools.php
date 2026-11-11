@@ -54,7 +54,7 @@ function shiki_tools_diagnostics() {
 	$add( 'Cron', $cron ? 'unconfirmed' : 'ok', $cron ? 'WordPress Cronは無効。サーバー側Cronの実行状況はこの画面から確認できません。' : 'WordPress Cron有効。実際の実行成功を保証するものではありません。' );
 	$due = 0;
 	foreach ( (array) _get_cron_array() as $timestamp => $hooks ) {
-		if ( (int) $timestamp < time() - 3600 ) { $due += count( $hooks ); }
+		if ( (int) $timestamp < time() - 3600 && is_array( $hooks ) ) { $due += count( $hooks ); }
 	}
 	$add( '定期処理の遅延', $due ? 'notice' : 'ok', $due ? $due . '件のフックが1時間以上遅延。アクセス頻度・サーバーCronをご確認ください。' : '1時間以上遅延したフックは検出していません。' );
 	$public = (bool) get_option( 'blog_public' );
@@ -146,7 +146,8 @@ function shiki_link_internal_status( $url ) {
 	if ( $port !== $home_port ) { return 'unresolved'; }
 	$path = rawurldecode( isset( $parts['path'] ) ? $parts['path'] : '/' );
 	$base_path = rtrim( isset( $home['path'] ) ? $home['path'] : '', '/' );
-	if ( false !== strpos( $path, "\0" ) || preg_match( '~(?:^|/)\.\.(?:/|$)~', $path ) ) { return 'unresolved'; }
+	// A backslash is a path separator on some servers; never let it reach the local file checks below.
+	if ( false !== strpos( $path, "\0" ) || false !== strpos( $path, '\\' ) || preg_match( '~(?:^|/)\.\.(?:/|$)~', $path ) ) { return 'unresolved'; }
 	if ( '' !== $base_path && 0 !== strpos( trailingslashit( $path ), trailingslashit( $base_path ) ) ) { return 'unresolved'; }
 	$relative = trim( substr( $path, strlen( $base_path ) ), '/' );
 	$query = array(); parse_str( isset( $parts['query'] ) ? $parts['query'] : '', $query );
@@ -285,18 +286,11 @@ function shiki_link_fetch( $url ) {
 }
 /** Delete only the observed lock value; another request may replace it after our read. */
 function shiki_links_acquire_lock() {
-	global $wpdb;
 	$now = time(); $lock = (array) get_option( 'shikipress_link_lock', array() );
 	if ( ! empty( $lock['time'] ) && $lock['time'] < $now - 90 ) { shiki_delete_job_lock_value( 'shikipress_link_lock', $lock ); }
 	$token = wp_generate_uuid4();
 	// add_option() can upsert a concurrent owner's value after its existence check.
-	$inserted = $wpdb->query( $wpdb->prepare(
-		"INSERT IGNORE INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, %s)",
-		'shikipress_link_lock', maybe_serialize( array( 'time' => $now, 'token' => $token ) ), 'no'
-	) );
-	wp_cache_delete( 'shikipress_link_lock', 'options' );
-	wp_cache_delete( 'notoptions', 'options' );
-	if ( 1 !== $inserted ) { return new WP_Error( 'locked', '検査が実行中です。' ); }
+	if ( ! shiki_insert_lock_row( 'shikipress_link_lock', array( 'time' => $now, 'token' => $token ) ) ) { return new WP_Error( 'locked', '検査が実行中です。' ); }
 	return $token;
 }
 function shiki_links_release_lock( $token ) {
