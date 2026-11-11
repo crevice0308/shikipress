@@ -57,8 +57,9 @@ add_filter('shiki_sanitize_settings', function (array $out, array $input, string
     return $out;
 }, 10, 3);
 function shiki_timezone(): DateTimeZone {
-    try { return new DateTimeZone(shiki_option('timezone', 'Asia/Tokyo')); }
-    catch (Exception $exception) { return new DateTimeZone('Asia/Tokyo'); }
+    // An unknown identifier throws an Exception and a non-string a TypeError; neither may stop a page.
+    try { return new DateTimeZone((string) shiki_option('timezone', 'Asia/Tokyo')); }
+    catch (Throwable $exception) { return new DateTimeZone('Asia/Tokyo'); }
 }
 function shiki_is_season_preview(): bool {
     return !is_admin() && current_user_can('manage_options') && is_string($_GET['shiki_preview_season'] ?? null) && is_string($_GET['_wpnonce'] ?? null) && isset(shiki_seasons()[sanitize_key(wp_unslash($_GET['shiki_preview_season']))]) && wp_verify_nonce(sanitize_text_field(wp_unslash($_GET['_wpnonce'])), 'shiki_season_preview');
@@ -71,7 +72,7 @@ add_action('template_redirect', function (): void {
 });
 function shiki_season(?DateTimeImmutable $date = null): string {
     if ($date === null && shiki_is_season_preview()) { return sanitize_key(wp_unslash($_GET['shiki_preview_season'])); }
-    if ($date === null && shiki_option('season_mode') === 'fixed') { return array_key_exists(shiki_option('season_fixed'), shiki_seasons()) ? shiki_option('season_fixed') : 'autumn'; }
+    if ($date === null && shiki_option('season_mode') === 'fixed') { $fixed = shiki_option('season_fixed'); return is_string($fixed) && isset(shiki_seasons()[$fixed]) ? $fixed : 'autumn'; }
     $date = ($date ?? new DateTimeImmutable('now', shiki_timezone()))->setTimezone(shiki_timezone());
     $month = (int) $date->format('n');
     return $month >= 3 && $month <= 5 ? 'spring' : ($month >= 6 && $month <= 8 ? 'summer' : ($month >= 9 && $month <= 11 ? 'autumn' : 'winter'));
@@ -80,11 +81,15 @@ function shiki_active_event(?DateTimeImmutable $date = null): array {
     $today = ($date ?? new DateTimeImmutable('now', shiki_timezone()))->setTimezone(shiki_timezone())->format('m-d');
     $events = [];
     foreach ((array) shiki_option('season_events', []) as $event) {
-        if (empty($event['enabled']) || !shiki_valid_month_day($event['start'] ?? '') || !shiki_valid_month_day($event['end'] ?? '')) { continue; }
+        // Rules are validated when saved; a damaged row is skipped instead of stopping the page.
+        if (!is_array($event) || empty($event['enabled']) || !is_string($event['start'] ?? null) || !is_string($event['end'] ?? null) || !shiki_valid_month_day($event['start']) || !shiki_valid_month_day($event['end'])) { continue; }
         $start = $event['start']; $end = $event['end'];
-        if (($start <= $end && $today >= $start && $today <= $end) || ($start > $end && ($today >= $start || $today <= $end))) { $events[] = $event; }
+        if (($start <= $end && $today >= $start && $today <= $end) || ($start > $end && ($today >= $start || $today <= $end))) {
+            $event['id'] = is_scalar($event['id'] ?? null) ? (string) $event['id'] : ''; $event['priority'] = is_scalar($event['priority'] ?? null) ? (int) $event['priority'] : 0;
+            $events[] = $event;
+        }
     }
-    usort($events, static fn($a, $b) => ((int) $b['priority'] <=> (int) $a['priority']) ?: strcmp($a['id'], $b['id']));
+    usort($events, static fn($a, $b) => ($b['priority'] <=> $a['priority']) ?: strcmp($a['id'], $b['id']));
     return $events[0] ?? [];
 }
 function shiki_season_context(): array {
@@ -100,7 +105,7 @@ function shiki_season_terms(): array {
 }
 /** Explicit, idempotent setup. A conflicting slug/name always requires a mapping. */
 function shiki_setup_categories(): array {
-    $settings = get_option('shikipress_settings', []); $mapping = shiki_season_terms(); $report = [];
+    $settings = get_option('shikipress_settings', []); $settings = is_array($settings) ? $settings : []; $mapping = shiki_season_terms(); $report = [];
     foreach (shiki_seasons() as $season => $label) {
         if (!empty($mapping[$season])) { $report[$season] = '既存の対応付けを維持'; continue; }
         $name = $label . 'の暮らし'; $by_slug = get_term_by('slug', $season, 'category'); $by_name = get_term_by('name', $name, 'category');
@@ -264,7 +269,8 @@ add_action('save_post', function ($post_id = 0, $post = null): void {
         if ($terms) { wp_set_post_categories($post_id, array_unique(array_merge(wp_get_post_categories($post_id), $terms))); update_post_meta($post_id, '_shiki_classification_applied', 'manual'); }
     }
     if (!empty($_POST['shiki_apply_slug']) && isset($_POST['shiki_slug_candidate'])) { shiki_adopt_slug($post_id, sanitize_text_field(wp_unslash($_POST['shiki_slug_candidate'])), true); }
-    shiki_invalidate_cache(); $busy = false;
+    // Editor fields of a draft change nothing public; a published post is invalidated as before.
+    shiki_invalidate_cache_for_post($post_id, get_post($post_id)); $busy = false;
 }, 30, 2);
 add_action('admin_enqueue_scripts', function ($hook): void {
     if (!in_array($hook, ['post.php', 'post-new.php'], true)) { return; }
@@ -285,11 +291,23 @@ function shiki_delete_job_lock_value(string $key, array $value): void {
     $wpdb->delete($wpdb->options, ['option_name' => $key, 'option_value' => maybe_serialize($value)], ['%s', '%s']);
     wp_cache_delete($key, 'options');
 }
+/**
+ * Insert-only lock creation. add_option() checks for the option first and then writes
+ * with an UPSERT, so a concurrent owner created in between would be overwritten.
+ * Exactly one inserted row grants ownership; both option caches are refreshed.
+ */
+function shiki_insert_lock_row(string $key, array $value): bool {
+    global $wpdb;
+    $inserted = $wpdb->query($wpdb->prepare("INSERT IGNORE INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, %s)", $key, maybe_serialize($value), 'no'));
+    wp_cache_delete($key, 'options');
+    wp_cache_delete('notoptions', 'options');
+    return 1 === $inserted;
+}
 function shiki_acquire_job_lock(string $key, int $seconds): string|false {
     $existing = get_option($key, []);
     if (is_array($existing) && $existing && (int) ($existing['expires'] ?? 0) < time()) { shiki_delete_job_lock_value($key, $existing); }
     $token = wp_generate_password(24, false, false);
-    return add_option($key, ['expires' => time() + $seconds, 'token' => $token], '', false) ? $token : false;
+    return shiki_insert_lock_row($key, ['expires' => time() + $seconds, 'token' => $token]) ? $token : false;
 }
 function shiki_release_job_lock(string $key, string $token): void {
     $existing = get_option($key, []);
@@ -474,7 +492,7 @@ add_action('rest_api_init', function (): void {
         $agent = (string) $request->get_header('user_agent');
         if (!$agent || preg_match('/bot|crawl|spider|slurp|headless|lighthouse|preview/i', $agent)) { return new WP_REST_Response(['counted' => false], 200); }
         $post = get_post(absint($request->get_param('post_id')));
-        if (!$post || $post->post_type !== 'post' || $post->post_status !== 'publish' || $post->post_password || get_post_meta($post->ID, '_shiki_exclude', true)) { return new WP_Error('post', '対象外の記事です。', ['status' => 400]); }
+        if (!$post || $post->post_type !== 'post' || $post->post_status !== 'publish' || $post->post_password || '1' === (string) get_post_meta($post->ID, '_shiki_exclude', true)) { return new WP_Error('post', '対象外の記事です。', ['status' => 400]); }
         // A single atomic counter update; no visitor ID, cookie, IP, user agent or raw event log is stored.
         shiki_install_views_table(); global $wpdb; $table = shiki_views_table(); $day = (new DateTimeImmutable('now', shiki_timezone()))->format('Y-m-d');
         $wpdb->query($wpdb->prepare("INSERT INTO $table (post_id, view_day, views) VALUES (%d, %s, 1) ON DUPLICATE KEY UPDATE views=views+1", $post->ID, $day)); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- trusted table prefix only.
@@ -487,7 +505,7 @@ add_action('rest_api_init', function (): void {
     ]]);
 });
 add_action('wp_enqueue_scripts', function (): void {
-    if (!shiki_option('view_count_enabled') || !is_singular('post') || (is_user_logged_in() && current_user_can('edit_posts')) || post_password_required() || get_post_meta(get_queried_object_id(), '_shiki_exclude', true)) { return; }
+    if (!shiki_option('view_count_enabled') || !is_singular('post') || (is_user_logged_in() && current_user_can('edit_posts')) || post_password_required() || '1' === (string) get_post_meta(get_queried_object_id(), '_shiki_exclude', true)) { return; }
     wp_enqueue_script('shiki-views', get_template_directory_uri() . '/assets/views.js', [], SHIKI_VERSION, true);
     wp_localize_script('shiki-views', 'shikiViews', ['endpoint' => rest_url('shikipress/v1/view'), 'postId' => get_queried_object_id(), 'consentRequired' => (bool) shiki_option('view_count_consent_required', true), 'cmpId' => absint(shiki_option('ads_cmp_id', 0))]);
 });
@@ -538,7 +556,8 @@ add_action('shiki_admin_tab_automation', 'shiki_automation_admin');
 function shiki_automation_admin(): void {
     if (!current_user_can('manage_options')) { return; }
     $report_key = 'shiki_setup_report_' . get_current_user_id(); $report = get_transient($report_key);
-    if ($report) { echo '<div class="notice notice-info"><p>'; foreach ($report as $season => $message) { echo esc_html(shiki_seasons()[$season] . '：' . $message) . '<br>'; } echo '</p></div>'; delete_transient($report_key); }
+    if (is_array($report) && $report) { echo '<div class="notice notice-info"><p>'; foreach ($report as $season => $message) { if (isset(shiki_seasons()[$season]) && is_string($message)) { echo esc_html(shiki_seasons()[$season] . '：' . $message) . '<br>'; } } echo '</p></div>'; delete_transient($report_key); }
+    if (isset($_GET['counts_deleted'])) { echo '<div class="notice notice-success inline"><p>保存済みの匿名集計を削除しました。</p></div>'; }
     echo '<h2>基本設定</h2><p>四季カテゴリーは、管理者がここで実行したときだけ作成します。現在の名前・スラッグを変更せず、衝突するカテゴリーは対応付けを選択します。</p><table class="widefat striped"><thead><tr><th>対象</th><th>実行予定</th></tr></thead><tbody>';
     $mapping = shiki_season_terms();
     foreach (shiki_seasons() as $season => $label) {
@@ -557,10 +576,17 @@ function shiki_automation_admin(): void {
         echo '<p><label>' . esc_html($label) . ' <select name="shikipress_settings[' . esc_attr($key) . ']">';
         foreach ($choices as $value => $text) { echo '<option value="' . esc_attr($value) . '" ' . selected(shiki_option($key), $value, false) . '>' . esc_html($text) . '</option>'; } echo '</select></label></p>';
     }
-    echo '<p><label>手動特集の投稿ID（カンマ区切り・左から優先） <input class="regular-text" name="shikipress_settings[featured_ids]" value="' . esc_attr(implode(',', shiki_option('featured_ids', []))) . '"></label></p>';
+    echo '<p><label>手動特集の投稿ID（カンマ区切り・左から優先） <input class="regular-text" name="shikipress_settings[featured_ids]" value="' . esc_attr(implode(',', shiki_auto_ids(shiki_option('featured_ids', [])))) . '"></label></p>';
     echo '<details><summary><strong>詳細設定：期間限定イベント</strong></summary><p>開始・終了はMM-DD。開始より終了が前なら年またぎです。両端の日付を含み、同時該当時は優先度が高いもの、同点はID順。最大12件。通常は無効です。</p>';
-    $events = (array) shiki_option('season_events', []); if (count($events) < 12) { $events[] = ['id' => 'custom-' . (count($events) + 1), 'label' => '', 'start' => '01-01', 'end' => '01-01', 'priority' => 0, 'accent' => '#805a44', 'enabled' => false]; }
+    $events = array_values(array_filter((array) shiki_option('season_events', []), 'is_array'));
+    if (count($events) < 12) {
+        // The extra row needs an ID no saved rule uses, also after an earlier rule was removed.
+        $used = array_map(static fn($event) => is_scalar($event['id'] ?? null) ? (string) $event['id'] : '', $events); $number = count($events) + 1;
+        while (in_array('custom-' . $number, $used, true)) { $number++; }
+        $events[] = ['id' => 'custom-' . $number, 'label' => '', 'start' => '01-01', 'end' => '01-01', 'priority' => 0, 'accent' => '#805a44', 'enabled' => false];
+    }
     foreach ($events as $i => $event) {
+        $event = array_map(static fn($value) => is_scalar($value) ? $value : '', $event) + ['id' => '', 'label' => '', 'start' => '', 'end' => '', 'priority' => 0, 'accent' => '', 'enabled' => false];
         $name = 'shikipress_settings[season_events][' . $i . ']';
         echo '<fieldset style="border:1px solid #ccd0d4;padding:12px;margin:12px 0"><legend>イベント ' . (int) ($i + 1) . '</legend><input type="hidden" name="' . esc_attr($name . '[id]') . '" value="' . esc_attr($event['id']) . '">';
         echo '<p><label><input type="checkbox" name="' . esc_attr($name . '[enabled]') . '" value="1" ' . checked(!empty($event['enabled']), true, false) . '> 有効</label></p>';

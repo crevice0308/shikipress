@@ -28,7 +28,9 @@ primary_state="$SHIKI_DEV_STATE"
 clean_state="${SHIKI_CLEAN_STATE:-$(dirname "$SHIKI_DEV_STATE")/clean-state}"
 mkdir -p "$clean_state/downloads"
 if [[ ! -f "$clean_state/.shikipress-owned-verification" ]]; then
-    if shiki_db -N -e 'SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME="shikipress_clean"' | rg -q .; then printf 'Unowned shikipress_clean DB exists; refusing to reset.\n' >&2; exit 1; fi
+    # Fail closed: a query error stops the script here, and no missing helper or broken pipe can skip the refusal.
+    existing_database="$(shiki_db -N -e 'SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME="shikipress_clean"')"
+    if [[ -n "$existing_database" ]]; then printf 'Unowned shikipress_clean DB exists; refusing to reset.\n' >&2; exit 1; fi
     printf 'Dedicated ShikiPress disposable package verification\n' >"$clean_state/.shikipress-owned-verification"
 fi
 # Reset only this explicitly owned, fixed-name throwaway database.

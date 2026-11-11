@@ -55,7 +55,7 @@ wp_ci eval 'if (get_stylesheet() !== "shikipress" || !defined("SHIKI_VERSION")) 
 wp_ci eval-file "$root/scripts/fixtures.php" 20
 # The suites write their own result files next to the tests; that directory is ignored by Git.
 mkdir -p "$root/tests/results"
-for suite in core frontend seo ads public-scope automation tools lifecycle media; do
+for suite in core frontend seo ads public-scope automation tools lifecycle media regression; do
   echo "::group::$suite integration suite"
   wp_ci eval-file "$root/tests/$suite-integration.php" | tee "$reports/$suite.txt"
   echo "::endgroup::"

@@ -1,6 +1,6 @@
 <?php
 /** Isolated interleaving tests. No WordPress database, real credentials, or HTTP. */
-$cases = array('success', 'failure', 'retry-first', 'retry-second', 'retry-exhausted', 'stale-success-title', 'stale-failure-title', 'stale-retry-title', 'stale-success-token', 'stale-failure-token', 'stale-retry-token', 'replace-before-claim-title', 'replace-before-claim-token', 'busy-lock', 'busy-lock-last-deferral', 'busy-lock-exhausted', 'busy-lock-recovery', 'replace-before-deferral', 'duplicate-inflight', 'exception-release', 'status-stale-title', 'status-stale-token', 'status-stopped', 'status-scheduled', 'status-working', 'status-title-mismatch');
+$cases = array('success', 'failure', 'retry-first', 'retry-second', 'retry-exhausted', 'stale-success-title', 'stale-failure-title', 'stale-retry-title', 'stale-success-token', 'stale-failure-token', 'stale-retry-token', 'replace-before-claim-title', 'replace-before-claim-token', 'busy-lock', 'busy-lock-last-deferral', 'busy-lock-exhausted', 'busy-lock-recovery', 'replace-before-deferral', 'absent-lock-race', 'duplicate-inflight', 'exception-release', 'status-stale-title', 'status-stale-token', 'status-stopped', 'status-scheduled', 'status-working', 'status-title-mismatch');
 $scenario = defined('SHIKI_JOB_CASE') ? SHIKI_JOB_CASE : ($argv[1] ?? '--list');
 if ($scenario === '--list') { echo implode("\n", $cases) . "\n"; return; }
 if (!in_array($scenario, $cases, true)) { throw new RuntimeException('Unknown scenario'); }
@@ -13,7 +13,7 @@ class WP_Error {
 }
 class FixtureJsonResponse extends RuntimeException { public function __construct(public $data) { parent::__construct('Synthetic JSON response'); } }
 $hooks = $options = $events = array(); $post = new WP_Post(); $http_calls = 0; $passed = 0; $meta_invalidations = 0;
-$after_lock = $before_http = $before_cas = null; $response_kind = 'success';
+$after_lock = $before_insert = $before_http = $before_cas = null; $response_kind = 'success';
 function fixture_job($token = 'original', $title = 'Original title') { return array('state' => 'queued', 'title_hash' => hash('sha256', $title), 'token' => $token, 'attempts' => 0, 'created' => time()); }
 $meta = array('_shiki_translation' => fixture_job());
 function add_action($hook, $callback, ...$unused) { $GLOBALS['hooks'][$hook][] = $callback; }
@@ -29,8 +29,11 @@ function update_post_meta($id, $key, $value, $previous = '') {
 }
 function shiki_option($key, ...$unused) { return $key === 'deepl_enabled' ? true : 'free'; }
 function get_option($key, $default = array()) { return $GLOBALS['options'][$key] ?? $default; }
+// Core's add_option() checks absence first and then writes with an UPSERT, which can replace
+// a lock another request created in between. The theme no longer acquires locks through it.
 function add_option($key, $value, ...$unused) {
     if (isset($GLOBALS['options'][$key])) { return false; }
+    if ($GLOBALS['before_insert']) { $callback = $GLOBALS['before_insert']; $GLOBALS['before_insert'] = null; $callback(); }
     $GLOBALS['options'][$key] = $value;
     if ($GLOBALS['after_lock']) { $callback = $GLOBALS['after_lock']; $GLOBALS['after_lock'] = null; $callback(); }
     return true;
@@ -43,6 +46,17 @@ function wp_cache_delete($key, $group) {
 }
 $wpdb = new class {
     public $options = 'wp_options';
+    public function prepare($sql, ...$args) { return array($sql, $args); }
+    // Insert-only lock creation: an existing row is never replaced, and only one inserted row grants ownership.
+    public function query($prepared) {
+        list($sql, $args) = $prepared;
+        if ($sql !== 'INSERT IGNORE INTO wp_options (option_name, option_value, autoload) VALUES (%s, %s, %s)' || count($args) !== 3 || $args[2] !== 'no') { throw new RuntimeException('Unexpected or unprepared lock insertion.'); }
+        if ($GLOBALS['before_insert']) { $callback = $GLOBALS['before_insert']; $GLOBALS['before_insert'] = null; $callback(); }
+        if (isset($GLOBALS['options'][$args[0]])) { return 0; }
+        $GLOBALS['options'][$args[0]] = unserialize($args[1]);
+        if ($GLOBALS['after_lock']) { $callback = $GLOBALS['after_lock']; $GLOBALS['after_lock'] = null; $callback(); }
+        return 1;
+    }
     public function delete($table, $where, ...$unused) {
         $key = $where['option_name'];
         if (serialize($GLOBALS['options'][$key] ?? null) === $where['option_value']) { unset($GLOBALS['options'][$key]); }
@@ -134,6 +148,14 @@ if (str_starts_with($scenario, 'status-')) {
             check($http_calls === 1 && $meta['_shiki_translation']['state'] === 'done' && !$events, 'deferred job completes after lock release');
         }
     }
+} elseif ($scenario === 'absent-lock-race') {
+    // Another worker creates the lock after this worker read "no lock" and before its own insert.
+    $other = array('expires' => time() + 30, 'token' => 'concurrent-owner');
+    $before_insert = static function () use ($lock, $other) { $GLOBALS['options'][$lock] = $other; };
+    $run(1, 'original');
+    check($options[$lock] === $other, 'a lock created between the read and the insert is never overwritten');
+    check($http_calls === 0 && $meta['_shiki_translation']['attempts'] === 0, 'the losing worker sends nothing and spends no attempt');
+    check($meta['_shiki_translation']['state'] === 'queued' && count($events) === 1 && $events[0]['args'] === array(1, 'original'), 'the consumed event is rescheduled for the still queued job');
 } elseif ($scenario === 'duplicate-inflight') {
     $after_lock = static function () { $GLOBALS['meta']['_shiki_translation']['state'] = 'working'; $GLOBALS['meta']['_shiki_translation']['attempts'] = 1; };
     $run(1, 'original');

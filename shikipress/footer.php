@@ -1,7 +1,7 @@
 <?php if (!defined('ABSPATH')) { exit; }
 $shiki_context = shiki_frontend_context();
 $shiki_footer_has_posts = shiki_public_posts(['posts_per_page' => 1, 'fields' => 'ids', 'no_found_rows' => true])->have_posts();
-$shiki_tabs = array_merge(['home' => 'ホーム', 'categories' => 'カテゴリー', 'pages' => '固定ページ', 'search' => '検索'], (array) shiki_option('tabs', []));
+$shiki_tabs = array_merge(['home' => 'ホーム', 'categories' => 'カテゴリー', 'pages' => '固定ページ', 'search' => '検索'], array_filter((array) shiki_option('tabs', []), 'is_scalar'));
 ?>
 <?php if ($shiki_footer_has_posts && function_exists('shiki_ad')) { ?><div class="footer-ad wrap" data-modal-inert><?php shiki_ad('footer'); ?></div><?php } ?>
 <footer class="site-footer" data-modal-inert>

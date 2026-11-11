@@ -15,7 +15,15 @@ function shiki_option( $key, $default = null ) {
     $options = get_option( 'shikipress_settings', array() );
     $options = is_array( $options ) ? $options : array();
     $defaults = shiki_defaults();
-    return array_key_exists( $key, $options ) ? $options[ $key ] : ( $defaults[ $key ] ?? $default );
+    if ( ! array_key_exists( $key, $options ) ) { return $defaults[ $key ] ?? $default; }
+    $value = $options[ $key ];
+    // The settings screens only store validated values. A value of another shape (a damaged
+    // option, or one written by other code) must never reach templates that expect the documented type.
+    if ( isset( $defaults[ $key ] ) ) {
+        $mismatch = is_array( $defaults[ $key ] ) ? ! is_array( $value ) : ( null !== $value && ! is_scalar( $value ) );
+        if ( $mismatch ) { return $defaults[ $key ]; }
+    }
+    return $value;
 }
 
 function shiki_setup() {
@@ -79,14 +87,45 @@ function shiki_saved_post( $post_id = 0, $post = null ) {
     $post = $id ? get_post( $id ) : null; // get_post( 0 ) would return the global post.
     return $post instanceof WP_Post ? $post : null;
 }
-// Revisions and autosaves never change public output; purging on each of them
-// would empty the caches about once a minute while an editor is typing.
-add_action( 'save_post', static function ( $post_id = 0 ) {
-    $id = is_scalar( $post_id ) ? absint( $post_id ) : 0;
-    if ( ! $id || ! wp_is_post_revision( $id ) ) { shiki_invalidate_cache(); }
-}, 90, 1 );
-add_action( 'deleted_post', 'shiki_invalidate_cache', 10, 0 );
-add_action( 'set_object_terms', 'shiki_invalidate_cache', 10, 0 );
+/**
+ * Only content a visitor can reach changes public output: a published post or an
+ * uploaded file. Drafts, pending, scheduled, private and trashed posts, revisions
+ * and oEmbed cache entries do not.
+ */
+function shiki_post_is_public_output( $post ) {
+    if ( ! $post instanceof WP_Post || in_array( $post->post_type, array( 'revision', 'oembed_cache' ), true ) ) { return false; }
+    return 'publish' === $post->post_status || 'attachment' === $post->post_type;
+}
+/**
+ * Invalidate for a change to one post. A post that cannot be resolved keeps the full
+ * invalidation, so a caller that cannot name its post is never left with stale lists.
+ */
+function shiki_invalidate_cache_for_post( $post_id = 0, $post = null ) {
+    $post = shiki_saved_post( $post_id, $post );
+    if ( ! $post || shiki_post_is_public_output( $post ) ) { shiki_invalidate_cache(); }
+}
+// Saving a draft, its autosave (the block editor updates the author's own draft itself
+// about once a minute) or a revision never changes public output; purging on each of
+// them would empty every cache, including a page cache, while an author is typing.
+add_action( 'save_post', 'shiki_invalidate_cache_for_post', 90, 2 );
+// A post entering or leaving publication changes public lists, although it is no
+// longer public by the time save_post fires for an unpublished post. An update that
+// stays published is invalidated by save_post, as before.
+add_action( 'transition_post_status', static function ( $new_status = '', $old_status = '', $post = null ) {
+    if ( ( 'publish' === $new_status ) === ( 'publish' === $old_status ) ) { return; }
+    if ( $post instanceof WP_Post && in_array( $post->post_type, array( 'revision', 'oembed_cache' ), true ) ) { return; }
+    shiki_invalidate_cache();
+}, 10, 3 );
+// The row is already gone here; only the object core passes can tell what was deleted.
+add_action( 'deleted_post', static function ( $post_id = 0, $post = null ) {
+    if ( ! $post instanceof WP_Post || shiki_post_is_public_output( $post ) ) { shiki_invalidate_cache(); }
+}, 10, 2 );
+// Core sets the terms of a post on every save, including each draft autosave.
+add_action( 'set_object_terms', static function ( $object_id = 0, $terms = array(), $tt_ids = array(), $taxonomy = '' ) {
+    $post = shiki_saved_post( $object_id );
+    if ( $post && is_string( $taxonomy ) && is_object_in_taxonomy( $post->post_type, $taxonomy ) && ! shiki_post_is_public_output( $post ) ) { return; }
+    shiki_invalidate_cache();
+}, 10, 4 );
 add_action( 'edited_term', 'shiki_invalidate_cache', 10, 0 );
 add_action( 'delete_term', 'shiki_invalidate_cache', 10, 0 );
 add_action( 'update_option_shikipress_settings', 'shiki_invalidate_cache', 10, 0 );
@@ -94,7 +133,7 @@ add_action( 'update_option_blog_public', 'shiki_invalidate_cache', 10, 0 );
 
 // REST and plugins may update these fields after save_post has already fired.
 function shiki_public_meta_changed( $meta_id, $object_id, $meta_key ) {
-    if ( in_array( $meta_key, array( '_shiki_exclude', '_shiki_noindex', '_shiki_priority', '_shiki_seo_title', '_shiki_seo_description', '_shiki_og_image', '_thumbnail_id' ), true ) ) { shiki_invalidate_cache(); }
+    if ( in_array( $meta_key, array( '_shiki_exclude', '_shiki_noindex', '_shiki_priority', '_shiki_seo_title', '_shiki_seo_description', '_shiki_og_image', '_thumbnail_id' ), true ) ) { shiki_invalidate_cache_for_post( $object_id ); }
 }
 foreach ( array( 'added_post_meta', 'updated_post_meta', 'deleted_post_meta' ) as $shiki_meta_hook ) {
     add_action( $shiki_meta_hook, 'shiki_public_meta_changed', 20, 3 );
@@ -188,6 +227,30 @@ function shiki_rest_public_scope( $args, $request ) {
 add_filter( 'rest_post_query', 'shiki_rest_public_scope', 20, 2 );
 add_filter( 'rest_page_query', 'shiki_rest_public_scope', 20, 2 );
 add_filter( 'rest_post_search_query', 'shiki_rest_public_scope', 20, 2 );
+
+/**
+ * A term "include" list that matches no term. Before WordPress 6.9 a list holding only 0
+ * was treated as no filter at all, so every term (hidden and noindex ones too) was returned.
+ */
+function shiki_no_term_ids() {
+    return array( PHP_INT_MAX );
+}
+
+/** Public REST term lists omit the categories hidden from the site's own lists; editors keep core access. */
+function shiki_rest_hidden_categories( $args ) {
+    $hidden = shiki_ids( shiki_option( 'category_exclude', array() ) );
+    if ( ! $hidden || ! is_array( $args ) || current_user_can( 'edit_posts' ) ) { return $args; }
+    // WP_Term_Query ignores "exclude" whenever "include" is set, so both are narrowed.
+    $include = wp_parse_id_list( $args['include'] ?? array() );
+    if ( $include ) {
+        $include = array_values( array_diff( $include, $hidden ) );
+        $args['include'] = $include ? $include : shiki_no_term_ids();
+    }
+    $args['exclude'] = array_values( array_unique( array_merge( wp_parse_id_list( $args['exclude'] ?? array() ), $hidden ) ) );
+    return $args;
+}
+add_filter( 'rest_category_query', 'shiki_rest_hidden_categories', 20 );
+add_filter( 'rest_term_search_query', 'shiki_rest_hidden_categories', 20 );
 
 /** A prepared fixed-policy EXISTS clause also protects core's separate comments-feed SQL. */
 /** $column is a fixed internal SQL column reference, never request input. */
@@ -345,7 +408,8 @@ function shiki_prepare_pages() {
     if ( ! current_user_can( 'manage_options' ) || ! current_user_can( 'edit_pages' ) ) { wp_die( 'Forbidden', '', array( 'response' => 403 ) ); }
     check_admin_referer( 'shiki_prepare_pages' );
     $settings = get_option( 'shikipress_settings', array() );
-    $roles = (array) ( $settings['page_roles'] ?? array() );
+    $settings = is_array( $settings ) ? $settings : array();
+    $roles = is_array( $settings['page_roles'] ?? null ) ? $settings['page_roles'] : array();
     $templates = array(
         'privacy' => array( 'プライバシーポリシー', '個人情報の取り扱い、広告・同意管理、Cookie、問い合わせ先を、実際の運用に合わせて記入してください。外部サービスの導入後はその条件を確認してください。' ),
         'contact' => array( 'お問い合わせ', '実際に利用できる連絡方法を記入してください。この下書きにはフォームや送信先は設定されていません。' ),
@@ -370,7 +434,9 @@ add_action( 'admin_post_shiki_prepare_pages', 'shiki_prepare_pages' );
 function shiki_navigation_screen() {
     shiki_settings_form_start( 'navigation' );
     echo '<div class="shiki-admin-card"><h2>基本設定：スマホ下部の4タブ</h2><p>ホームはトップページへ移動し、他の3つは一覧・検索パネルを開きます。</p>';
-    foreach ( (array) shiki_option( 'tabs' ) as $key => $label ) {
+    $tabs = (array) shiki_option( 'tabs' );
+    foreach ( shiki_defaults()['tabs'] as $key => $fallback ) {
+        $label = is_scalar( $tabs[ $key ] ?? null ) ? (string) $tabs[ $key ] : $fallback;
         echo '<p><label>' . esc_html( $key ) . ' <input type="text" maxlength="12" name="shikipress_settings[tabs][' . esc_attr( $key ) . ']" value="' . esc_attr( $label ) . '"></label></p>';
     }
     echo '</div><div class="shiki-admin-card"><h2>重要固定ページの対応付け</h2><p>公開済み・パスワードなし・除外なしのページだけを公開画面に表示します。選択しても下書きは公開されません。</p>';
@@ -382,7 +448,7 @@ function shiki_navigation_screen() {
     }
     echo '</div><details class="shiki-admin-card"><summary>詳細設定：表示順と除外</summary><p>ページIDは固定ページ編集URLのpost=の値です。カンマ区切りで入力します。</p>';
     foreach ( array( 'page_priority' => '優先表示するページID（入力順）', 'page_exclude' => '一覧から除外するページID', 'category_exclude' => '一覧から除外するカテゴリーID' ) as $key => $label ) {
-        echo '<p><label>' . esc_html( $label ) . '<br><input class="regular-text" type="text" inputmode="numeric" name="shikipress_settings[' . esc_attr( $key ) . ']" value="' . esc_attr( implode( ',', (array) shiki_option( $key, array() ) ) ) . '"></label></p>';
+        echo '<p><label>' . esc_html( $label ) . '<br><input class="regular-text" type="text" inputmode="numeric" name="shikipress_settings[' . esc_attr( $key ) . ']" value="' . esc_attr( implode( ',', shiki_ids( shiki_option( $key, array() ) ) ) ) . '"></label></p>';
     }
     echo '<p>それ以外のページはWordPressの並び順（menu_order）、タイトル順で表示します。固定ページの表示順は編集画面の「ページ属性」から変更できます。</p></details>';
     shiki_settings_form_end();
