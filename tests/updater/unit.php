@@ -139,14 +139,6 @@ foreach ( glob( SHIKI_TEST_FIXTURES . '/*.zip' ) as $file ) {
     $name = basename( $file, '.zip' ); $data = seed( $name ); $result = ShikiPress_Updater::validate_archive( $file, $data );
     check( str_starts_with( $name, 'valid' ) ? true === $result : is_wp_error( $result ), 'archive fixture ' . $name );
 }
-// A failed check keeps the last verified offer for display; installation still requires fresh data.
-seed(); ShikiPress_Updater::release(); $GLOBALS['http'][ ShikiPress_Updater::API ] = response( 'Service unavailable', 503 ); unset( $GLOBALS['cache'][ ShikiPress_Updater::CACHE ] );
-$kept = ShikiPress_Updater::filter_update( false, array( 'Version' => '1.1.0', 'UpdateURI' => ShikiPress_Updater::URI ), 'shikipress', array() );
-check( is_array( $kept ) && '2.0.0' === $kept['version'], 'a temporary failure keeps the last verified offer' );
-check( '' === $kept['package'], 'a kept offer is shown without a package, so nothing tries to install it' );
-check( is_wp_error( ShikiPress_Updater::pre_download( false, ShikiPress_Updater::URI . '/releases/download/v2.0.0/shikipress-2.0.0.zip', new Theme_Upgrader(), $normal ) ), 'installation never uses the last verified offer without fresh data' );
-$GLOBALS['cache'][ ShikiPress_Updater::LAST ]['data']['sha256'] = str_repeat( '0', 64 ); unset( $GLOBALS['cache'][ ShikiPress_Updater::CACHE ] );
-check( false === ShikiPress_Updater::filter_update( false, array( 'Version' => '1.1.0', 'UpdateURI' => ShikiPress_Updater::URI ), 'shikipress', array() ), 'a tampered last verified offer is discarded' );
 // While the Customizer previews this theme, another theme is active.
 seed(); $GLOBALS['wp_customize'] = new WP_Customize_Manager();
 check( false === ShikiPress_Updater::filter_update( false, array( 'Version' => '1.1.0', 'UpdateURI' => ShikiPress_Updater::URI ), 'shikipress', array() ) && 0 === count( $GLOBALS['calls'] ), 'a Customizer preview never advertises an offer' );

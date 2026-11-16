@@ -12,8 +12,6 @@ final class ShikiPress_Updater {
     const URI = 'https://github.com/crevice0308/shikipress';
     const API = 'https://api.github.com/repos/crevice0308/shikipress/releases/latest';
     const CACHE = 'shikipress_github_release_v1';
-    // The last verified release, kept longer than CACHE so that one failed check does not withdraw the offer.
-    const LAST = 'shikipress_github_release_last_v1';
     const MAX_PACKAGE = 10485760; // 10 MiB compressed; normal releases are much smaller.
     const MAX_EXPANDED = 31457280;
 
@@ -30,12 +28,6 @@ final class ShikiPress_Updater {
             return false;
         }
         $release = self::release();
-        // A temporary GitHub failure keeps the last verified offer visible; installation always refetches.
-        $display_only = false;
-        if ( is_wp_error( $release ) ) {
-            $release = self::last_verified();
-            $display_only = true;
-        }
         $current = $theme_data['Version'] ?? '';
         if ( is_wp_error( $release ) || ! self::version( $current ) ) {
             return false;
@@ -50,7 +42,7 @@ final class ShikiPress_Updater {
             'theme'        => 'shikipress',
             'version'      => $release['version'],
             'url'          => $release['url'],
-            'package'      => $display_only ? '' : $release['package'],
+            'package'      => $release['package'],
             'requires'     => $release['requires'],
             'requires_php' => $release['requires_php'],
             'tested'       => $release['tested'],
@@ -279,24 +271,12 @@ final class ShikiPress_Updater {
         if ( is_wp_error( $data ) ) {
             set_site_transient( self::CACHE, array( 'error' => true ), 15 * MINUTE_IN_SECONDS );
         } else {
-            $signed = array(
+            set_site_transient( self::CACHE, array(
                 'data' => $data,
                 'mac' => hash_hmac( 'sha256', wp_json_encode( $data ), wp_salt( 'auth' ) ),
-            );
-            set_site_transient( self::CACHE, $signed, 6 * HOUR_IN_SECONDS );
-            set_site_transient( self::LAST, $signed, 168 * HOUR_IN_SECONDS );
+            ), 6 * HOUR_IN_SECONDS );
         }
         return $data;
-    }
-
-    /** The last release that passed every check, for display only; pre_download() never uses it. */
-    private static function last_verified() {
-        $cached = get_site_transient( self::LAST );
-        if ( is_array( $cached ) && self::valid_data( $cached['data'] ?? null ) && is_string( $cached['mac'] ?? null ) &&
-            hash_equals( hash_hmac( 'sha256', wp_json_encode( $cached['data'] ), wp_salt( 'auth' ) ), $cached['mac'] ) ) {
-            return $cached['data'];
-        }
-        return self::error();
     }
 
     private static function fetch_release() {
