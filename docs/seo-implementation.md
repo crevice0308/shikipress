@@ -23,14 +23,16 @@ Yoast、Rank Math、All in One SEO、SEOPressがある場合、テーマのhead�
 - サイト全体 `blog_public=0`、検索、404、プレビュー、添付ページ、保護・未公開・除外コンテンツはnoindex。
 - 個別 `_shiki_noindex=1` はnoindex。タグ・著者・日付アーカイブの全体noindexも設定可能。著者／日付の初期値は有効、タグの初期値は無効。
 - `_shiki_exclude=1`、`page_exclude`、`category_exclude`、保護・未公開・個別noindexはHTML／XMLサイトマップへ掲載しない。noindex自体は閲覧権限を変更しない。
-- 表示設定でホームページ／投稿ページに割り当てた固定ページは `page_exclude` の対象にしない（`_shiki_exclude`・個別noindexは従来どおり有効）。
+- 表示設定でホームページ／投稿ページに割り当てた固定ページは `page_exclude` の対象にしない（`_shiki_exclude`・個別noindexは従来どおり有効）。投稿ページ（`is_home()`）でも、その固定ページのnoindex・SEOタイトル・説明・共有画像を使う。メニューからも、ホームと投稿ページへのリンクは消さない。
+- カテゴリーやタグで絞った検索結果は、タイトル・パンくずとも検索として扱う。`?m=YYYYMMDD` 形式の日付アーカイブのcanonicalは、その日付から作る（足りない部分を今日の日付で補わない）。
+- 構造化データのサイト名・著者名は、WordPressが保存時に付けた文字参照を戻した文字列にする。`og:locale` は `language_TERRITORY` 形式で出し、日本語（`ja`）は `ja_JP` とする。
 - `blog_public=0` のときコアXMLサイトマップを無効化する。HTMLは読者案内として公開済み情報を引き続き表示する。noindex／サイトマップ停止はアクセス制限の代替ではない。
 
 ## サイトマップ
 
 XMLはWordPressコアのprovider／queryフィルターを使う。別XMLエンドポイントを作らず、投稿・固定ページ・カテゴリー・タグを対象とする。noindex著者のproviderは無効、著者を有効にする場合もインデックス対象投稿の著者だけ。カテゴリー／タグも実際のインデックス対象公開記事を持つtermだけを対象にする。XMLとmax pages計算は同じクエリー条件を使う。管理画面に `get_sitemap_url('index')` の実URLを選択・コピーできる読み取り専用欄と確認リンクを表示する。
 
-読者向けHTMLは固定ページに `[shiki_sitemap]` または `[shiki_html_sitemap]` を置く。設定上のterm IDと対応する四季カテゴリー、記事、固定ページに分ける。記事と固定ページは10〜100件で独立してページ分割し、それぞれ `shiki_map_posts`／`shiki_map_pages` を使う。分割URLは独立したcanonicalを持つ。空セクションは出さない。HTMLサイトマップ作成だけでGoogle登録したようには表示しない。
+読者向けHTMLは固定ページに `[shiki_sitemap]` または `[shiki_html_sitemap]` を置く。設定上のterm IDと対応する四季カテゴリー、記事、固定ページに分ける。記事と固定ページは10〜100件で独立してページ分割し、それぞれ `shiki_map_posts`／`shiki_map_pages` を使う。分割URLは独立したcanonicalを持つ。存在しない番号を指定した場合は最終ページを表示し、canonicalも最終ページを指す。空セクションは出さない。HTMLサイトマップ作成だけでGoogle登録したようには表示しない。
 
 Google所有権確認はトークンのみを保存・出力し、外部通信を行わない。Search Console作成・所有権確認操作・サイトマップ送信は実行していない。公開サイトでのGoogle/SNSの実クロール、Search Console、エックスサーバーのキャッシュは利用者の本番条件による確認項目。
 

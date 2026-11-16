@@ -243,6 +243,79 @@ class PublisherTests(unittest.TestCase):
         self.assertEqual(prepared['source'], 'b' * 40)
         theme_at.assert_called_once_with('b' * 40)
 
+    def test_interrupted_publication_resumes_from_its_tag_after_main_moves(self):
+        # Before 1.1.9 a tag or draft left by an interrupted run made every later main
+        # commit fail with "already points to a different commit".
+        tagged = 'b' * 40
+        for kind in ('draft', 'tag-only'):
+            with self.subTest(kind=kind):
+                release = release_state(self.spec, tagged, {}, draft=True) if kind == 'draft' else None
+                ancestor = mock.Mock()
+                theme_at = mock.Mock(return_value=self.files)
+                verify = mock.Mock()
+                with mock.patch.dict(PUBLISHER, find_release=lambda tag: release, tag_commit=lambda tag: tagged,
+                                     ancestor=ancestor, theme_at=theme_at, verify_release=verify):
+                    prepared = PUBLISHER['prepare'](PUBLISHER['current_spec'](self.files), self.source)
+                self.assertEqual(prepared['source'], tagged)
+                theme_at.assert_called_once_with(tagged)
+                ancestor.assert_called_once_with(tagged, self.source)
+                if release is None:
+                    verify.assert_not_called()
+                else:
+                    self.assertEqual(verify.call_args.args[2], tagged)
+                    self.assertFalse(verify.call_args.args[4])
+
+    def test_interrupted_publication_with_changed_theme_bytes_fails_closed(self):
+        changed = dict(self.files, **{'shikipress/index.php': b'<?php // changed after the tag'})
+        with mock.patch.dict(PUBLISHER, find_release=lambda tag: None, tag_commit=lambda tag: 'b' * 40,
+                             ancestor=mock.Mock(), theme_at=lambda sha: self.files):
+            with self.assertRaisesRegex(RuntimeError, 'Pinned package checksum mismatch'):
+                PUBLISHER['prepare'](PUBLISHER['current_spec'](changed), self.source)
+
+    def test_concurrency_is_job_level(self):
+        # A skipped job never enters the group, so it cannot replace a pending publication.
+        head = TEXT.split('\njobs:\n', 1)[0]
+        self.assertNotIn('concurrency:', head)
+        self.assertIn('    concurrency:\n      group: shikipress-bounded-release\n      cancel-in-progress: false\n', TEXT)
+
+    def test_older_commit_event_evaluates_current_main(self):
+        evidence = [{'id': 1, 'attempt': 1, 'url': 'https://github.com/ci'}]
+        run = {'head_sha': 'b' * 40, 'head_branch': 'main', 'event': 'push', 'conclusion': 'success',
+               'name': 'Offline browser regression',
+               'head_repository': {'full_name': 'crevice0308/shikipress'},
+               'repository': {'full_name': 'crevice0308/shikipress'}}
+        for changes, expected in (({}, True), ({'conclusion': 'failure'}, False),
+                                  ({'head_repository': {'full_name': 'untrusted/fork'}}, False),
+                                  ({'head_branch': 'topic'}, False), ({'head_sha': None}, False),
+                                  ({'name': 'Unrelated workflow'}, False)):
+            with self.subTest(changes=changes), tempfile.NamedTemporaryFile(mode='w') as event:
+                json.dump({'workflow_run': {**run, **changes}}, event); event.flush()
+                env = {'GITHUB_REPOSITORY': 'crevice0308/shikipress', 'GITHUB_REF': 'refs/heads/main',
+                       'GITHUB_SHA': self.source, 'GITHUB_EVENT_PATH': event.name, 'GITHUB_EVENT_NAME': 'workflow_run'}
+                gate = mock.Mock(return_value=None)
+                with mock.patch.dict(PUBLISHER['os'].environ, env), mock.patch.dict(PUBLISHER,
+                        current_main=mock.Mock(), ci_gate=gate, prepare=mock.Mock(), publish=mock.Mock()):
+                    PUBLISHER['main']()
+                if expected:
+                    gate.assert_called_once_with(self.source)
+                else:
+                    gate.assert_not_called()
+
+    def test_local_package_script_matches_publisher_bytes(self):
+        # scripts/package.py sorted Path objects, so names such as inc/ and inc-legacy.php could be
+        # ordered differently from the publisher's plain strings and give another SHA-256.
+        theme = ROOT / 'shikipress'
+        files = {'shikipress/' + item.relative_to(theme).as_posix(): item.read_bytes()
+                 for item in theme.rglob('*') if item.is_file()}
+        spec = PUBLISHER['current_spec'](files)
+        with tempfile.TemporaryDirectory() as directory:
+            subprocess.run(['python3', str(ROOT / 'scripts/package.py'), directory], check=True, capture_output=True)
+            built = (Path(directory) / f'shikipress-{spec["version"]}.zip').read_bytes()
+            self.assertEqual(hashlib.sha256(built).hexdigest(), spec['sha256'])
+            self.assertTrue((Path(directory) / 'SHA256SUMS.txt').read_bytes().endswith(b'.zip\n'))
+        names = ['shikipress/inc/a.php', 'shikipress/inc-legacy.php', 'shikipress/assets.css', 'shikipress/assets/a.js']
+        self.assertEqual(sorted(names), sorted(names, key=lambda name: Path(name).as_posix()))
+
     def run_draft_publication(self, corrupted=None, initial_names=()):
         initial = {name: self.assets[name] for name in initial_names}
         release = release_state(self.spec, self.source, initial, draft=True)

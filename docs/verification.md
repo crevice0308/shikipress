@@ -59,7 +59,7 @@
 
 通常の検査用GitHub Actionsはcontents:readのみで、PHP8.2〜8.5の構文検査、MySQL8.0によるWordPress6.6→固定版7.1.3/最新安定版、同一DBでのPHP変更、テーマ旧版→現行版、広告/画面回帰を検査する構成です。CI設定は合格証明ではありません。対象コミットの実際のActions結果を参照してください。
 
-Release作成専用ジョブだけにcontents:write/actions:readを限定しています。同一mainコミットの両CI成功・配布ZIPの固定ハッシュを確認して、レビュー済みの版許可リストにあるReleaseだけを公開します。既存タグや公開済みReleaseは上書きしません。将来の版追加は許可リストのレビュー済み変更が必要です。
+Release作成専用ジョブだけにcontents:write/actions:readを限定しています。（1.1.2以降の現在の条件）mainでstyle.cssとfunctions.phpの安定版番号を上げ、そのmainコミットで両CIが成功すると、同じソースから配布ZIPを生成・検証して正式Releaseを自動で公開します。版の許可リストへの追加は不要です（許可リストは公開済みの旧版をオフライン試験で照合するためだけに残しています）。準備のつもりで版番号を上げても公開され、自動更新を有効にしたサイトへ配布されることに注意してください。既存タグや公開済みReleaseは上書きしません。
 
 検証対象の公式情報: [WordPressリリース](https://wordpress.org/download/releases/)、[WordPress要件](https://wordpress.org/about/requirements/)、[PHPサポート版](https://www.php.net/supported-versions.php)。確認時の安定版WordPressは7.1.3、サポート中PHPの枝は8.2/8.3/8.4/8.5でした。
 

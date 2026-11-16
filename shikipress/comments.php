@@ -13,7 +13,7 @@ if (get_option('show_comments_cookies_opt_in')) {
     $shiki_fields['cookies'] = '<p class="comment-form-cookies-consent"><input id="wp-comment-cookies-consent" name="wp-comment-cookies-consent" type="checkbox" value="yes"' . checked(!empty($shiki_commenter['comment_author_email']), true, false) . '><label for="wp-comment-cookies-consent">次回のコメントのために、このブラウザーに名前・メールアドレス・サイトを保存する</label></p>';
 }
 ?>
-<section class="comments-area" aria-label="コメント">
+<section class="comments-area" id="comments" aria-label="コメント">
 <?php if (have_comments()) { ?><h2 id="comments-title">コメント</h2><ol class="comment-list"><?php wp_list_comments(['style' => 'ol', 'short_ping' => true, 'avatar_size' => 0, 'reply_text' => '返信する']); ?></ol><?php the_comments_pagination(['prev_text' => '前のコメント', 'next_text' => '次のコメント']); }
 if (!comments_open() && get_comments_number()) { ?><p>コメントの受付は終了しました。</p><?php }
 $shiki_comment_defaults = [

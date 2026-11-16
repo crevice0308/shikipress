@@ -165,7 +165,7 @@ function shiki_link_internal_status( $url ) {
 	}
 	if ( preg_match( '~^(?:author/|\d{4}(?:/|$)|page/\d+)~', $relative ) ) { return 'unresolved'; }
 	$uploads = wp_upload_dir( null, false );
-	$upload_path = rawurldecode( wp_parse_url( $uploads['baseurl'], PHP_URL_PATH ) );
+	$upload_path = rawurldecode( (string) wp_parse_url( $uploads['baseurl'], PHP_URL_PATH ) );
 	if ( $upload_path && 0 === strpos( $path, trailingslashit( $upload_path ) ) ) {
 		$file = $uploads['basedir'] . '/' . substr( $path, strlen( trailingslashit( $upload_path ) ) );
 		return is_file( $file ) ? 'ok' : 'missing';
@@ -176,8 +176,15 @@ function shiki_link_internal_status( $url ) {
 	return 'unresolved';
 }
 function shiki_links_scan_batch( $reset = false ) {
-	$state = $reset ? array( 'offset' => 0, 'complete' => false, 'results' => array(), 'queue' => array(), 'dropped' => 0 ) : shiki_links_state();
-	$posts = get_posts( array( 'post_type' => array( 'post', 'page' ), 'post_status' => 'publish', 'has_password' => false, 'posts_per_page' => 40, 'offset' => $state['offset'], 'orderby' => 'ID', 'order' => 'ASC', 'suppress_filters' => false ) );
+	$state = $reset ? array( 'offset' => 0, 'last_id' => 0, 'complete' => false, 'results' => array(), 'queue' => array(), 'dropped' => 0 ) : shiki_links_state();
+	$args = array( 'post_type' => array( 'post', 'page' ), 'post_status' => 'publish', 'has_password' => false, 'posts_per_page' => 40, 'orderby' => 'ID', 'order' => 'ASC', 'suppress_filters' => false );
+	// Continue after the last checked ID: an offset shifts when posts are published or removed between
+	// batches, which skipped posts and still reported a complete round. A state saved before 1.1.9 has no ID yet.
+	$after = isset( $state['last_id'] ) && is_numeric( $state['last_id'] ) ? max( 0, (int) $state['last_id'] ) : null;
+	if ( null === $after ) { $args['offset'] = max( 0, (int) $state['offset'] ); }
+	$where = static function ( $sql ) use ( $after ) { global $wpdb; return $sql . $wpdb->prepare( " AND {$wpdb->posts}.ID > %d", $after ); };
+	if ( null !== $after ) { add_filter( 'posts_where', $where, PHP_INT_MAX ); }
+	try { $posts = get_posts( $args ); } finally { remove_filter( 'posts_where', $where, PHP_INT_MAX ); }
 	foreach ( $posts as $post ) {
 		$processor = new WP_HTML_Tag_Processor( $post->post_content ); $seen = array(); $link_count = 0;
 		while ( $processor->next_tag( array( 'tag_name' => 'A' ) ) && $link_count < 500 ) {
@@ -194,7 +201,8 @@ function shiki_links_scan_batch( $reset = false ) {
 			} elseif ( 'ok' !== $status && count( $state['results'] ) < 1000 ) { $state['results'][] = array( 'url' => $url, 'sources' => array( $post->ID ), 'status' => $status ); }
 		}
 	}
-	$state['offset'] += count( $posts ); $state['complete'] = count( $posts ) < 40;
+	$state['offset'] = (int) $state['offset'] + count( $posts ); $state['complete'] = count( $posts ) < 40;
+	if ( $posts ) { $state['last_id'] = (int) end( $posts )->ID; } elseif ( null !== $after ) { $state['last_id'] = $after; }
 	update_option( 'shikipress_link_state', $state, false );
 	return $state;
 }

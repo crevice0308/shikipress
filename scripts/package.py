@@ -12,22 +12,24 @@ import zipfile
 root = Path(__file__).resolve().parent.parent
 theme = root / 'shikipress'
 out = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else root / 'dist'
-version = re.search(r'^Version:\s*(\S+)', (theme / 'style.css').read_text(), re.M).group(1)
+# Theme sources are UTF-8 whatever the local code page (for example cp932 on Japanese Windows).
+version = re.search(r'^Version:\s*(\S+)', (theme / 'style.css').read_text(encoding='utf-8'), re.M).group(1)
 if not re.fullmatch(r'\d+\.\d+\.\d+', version):
     raise SystemExit('Invalid theme version')
-if f"define( 'SHIKI_VERSION', '{version}' );" not in (theme / 'functions.php').read_text():
+if f"define( 'SHIKI_VERSION', '{version}' );" not in (theme / 'functions.php').read_text(encoding='utf-8'):
     raise SystemExit('Theme header/bootstrap versions disagree')
 allowed = {'.php', '.css', '.js', '.json', '.svg', '.png'}
 entries = []
-for file in sorted(theme.rglob('*')):
+# The same order as the release publisher (plain path strings), so both produce identical bytes.
+for file in sorted(theme.rglob('*'), key=lambda item: item.relative_to(root).as_posix()):
     relative = file.relative_to(root)
     if file.is_symlink():
         raise SystemExit(f'Symlink refused: {relative}')
     if not file.is_file():
         continue
-    if any(part.startswith('.') for part in relative.parts) or (file.suffix not in allowed and file.name != 'LICENSE'):
+    if any(part.startswith('.') for part in relative.parts) or (file.suffix not in allowed and relative.as_posix() != 'shikipress/LICENSE'):
         raise SystemExit(f'Unexpected theme file: {relative}')
-    if file.suffix in {'.php', '.js', '.css', '.json'} and re.search(r"define\s*\(\s*['\"]SHIKIPRESS_DEEPL_KEY['\"]\s*,", file.read_text()):
+    if file.suffix in {'.php', '.js', '.css', '.json'} and re.search(r"define\s*\(\s*['\"]SHIKIPRESS_DEEPL_KEY['\"]\s*,", file.read_text(encoding='utf-8')):
         raise SystemExit('Embedded key definition refused')
     entries.append((file, relative.as_posix()))
 for required in ['style.css', 'index.php', 'functions.php', 'theme.json', 'LICENSE']:
@@ -45,5 +47,5 @@ with zipfile.ZipFile(target) as archive:
     if archive.testzip():
         raise SystemExit('ZIP CRC failure')
 checksum = hashlib.sha256(target.read_bytes()).hexdigest()
-(out / 'SHA256SUMS.txt').write_text(f'{checksum}  {target.name}\n')
+(out / 'SHA256SUMS.txt').write_text(f'{checksum}  {target.name}\n', encoding='utf-8', newline='\n')
 print(json.dumps({'file': str(target), 'files': len(entries), 'sha256': checksum}, indent=2))

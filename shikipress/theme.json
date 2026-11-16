@@ -21,7 +21,7 @@
       { "slug": "large", "size": "1.625rem", "name": "大" },
       { "slug": "x-large", "size": "2.25rem", "name": "特大" }
     ] },
-    "spacing": { "units": ["px", "rem", "%", "vw"], "blockGap": "1.6rem" }
+    "spacing": { "units": ["px", "rem", "%", "vw"], "blockGap": true }
   },
   "styles": {
     "color": { "background": "#f8f7f2", "text": "#292d28" },

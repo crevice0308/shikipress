@@ -9,9 +9,6 @@ on:
 
 # Ordinary CI workflows retain contents: read. This workflow has no default grants.
 permissions: {}
-concurrency:
-  group: shikipress-bounded-release
-  cancel-in-progress: false
 
 jobs:
   release:
@@ -25,6 +22,11 @@ jobs:
         github.event.workflow_run.head_repository.full_name == github.repository))
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    # Job level: a run whose job is skipped (a failed or unrelated CI completion) never
+    # enters the group, so it cannot replace a pending run that would publish.
+    concurrency:
+      group: shikipress-bounded-release
+      cancel-in-progress: false
     permissions:
       contents: write
       actions: read
@@ -343,8 +345,11 @@ jobs:
               release = find_release(tag)
               target = tag_commit(tag)
               source = spec['commit'] or sha
-              # Published releases remain unchanged on later documentation-only pushes.
-              if release is not None and not release['draft'] and spec['commit'] is None:
+              # Published releases remain unchanged on later documentation-only pushes. A tag
+              # created by an interrupted publication names its source as well: later commits
+              # resume that draft instead of failing on the existing tag. The source must still
+              # be an ancestor of main and its ZIP must match the current version's bytes.
+              if spec['commit'] is None and (target is not None or (release is not None and not release['draft'])):
                   require(target is not None, 'Published release has no tag')
                   source = target
               ancestor(source, sha)
@@ -455,10 +460,16 @@ jobs:
               event_name = os.environ['GITHUB_EVENT_NAME']
               if event_name == 'workflow_run':
                   run = event['workflow_run']
-                  if not (trusted_run(run, sha) and run['conclusion'] == 'success'
+                  if not (bool(re.fullmatch('[0-9a-f]{40}', str(run.get('head_sha') or '')))
+                          and trusted_run(run, run['head_sha']) and run['conclusion'] == 'success'
                           and run['name'] in WORKFLOWS.values()):
-                      print('Ignoring stale, unsuccessful, or untrusted CI event.')
+                      print('Ignoring unsuccessful or untrusted CI event.')
                       return
+                  # An older commit's completion may be the last event to arrive, so it evaluates
+                  # the current main exactly like a manual dispatch. Every decision below comes
+                  # from the API state of that main commit, never from the event itself.
+                  if run.get('head_sha') != sha:
+                      print(f'CI event for an older commit; evaluating current main {sha}.')
               else:
                   require(event_name == 'workflow_dispatch', 'Unsupported release trigger')
               current_main(sha)

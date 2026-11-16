@@ -17,7 +17,9 @@ shiki_start_database() {
     if [[ ! -d "$SHIKI_DEV_STATE/db/mysql" ]]; then
         mariadb-install-db --no-defaults --datadir="$SHIKI_DEV_STATE/db" --auth-root-authentication-method=normal --skip-test-db --user="$(id -un)" >"$SHIKI_DEV_STATE/db-init.log" 2>&1
     fi
-    nohup mariadbd --no-defaults --datadir="$SHIKI_DEV_STATE/db" --socket= --bind-address=127.0.0.1 --port="$SHIKI_DB_PORT" --pid-file="$SHIKI_DEV_STATE/mariadb.pid" --user="$(id -un)" --log-error="$SHIKI_DEV_STATE/mariadb.log" >"$SHIKI_DEV_STATE/mariadb-console.log" 2>&1 &
+    mkdir -p "$SHIKI_DEV_STATE/db-files" && chmod 700 "$SHIKI_DEV_STATE/db-files"
+    # File import/export stays inside the private state directory; it can never write into the WordPress tree.
+    nohup mariadbd --no-defaults --datadir="$SHIKI_DEV_STATE/db" --secure-file-priv="$SHIKI_DEV_STATE/db-files" --socket= --bind-address=127.0.0.1 --port="$SHIKI_DB_PORT" --pid-file="$SHIKI_DEV_STATE/mariadb.pid" --user="$(id -un)" --log-error="$SHIKI_DEV_STATE/mariadb.log" >"$SHIKI_DEV_STATE/mariadb-console.log" 2>&1 &
     for _ in $(seq 1 100); do
         if mariadb-admin --no-defaults --protocol=tcp --host=127.0.0.1 --port="$SHIKI_DB_PORT" --user=root ping >/dev/null 2>&1; then return; fi
         sleep 0.1

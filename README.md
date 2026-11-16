@@ -7,7 +7,7 @@
 配布済みのインストール用ZIPは[最新の正式Release](https://github.com/crevice0308/shikipress/releases/latest)から取得できます。以下はソースから生成する場合の手順です。
 
 1. `python3 scripts/package.py dist` でインストール用 ZIP を生成します。
-2. WordPress 管理画面の「外観 → テーマ → 新しいテーマを追加 → テーマのアップロード」から `dist/shikipress-1.1.8.zip` を選びます。
+2. WordPress 管理画面の「外観 → テーマ → 新しいテーマを追加 → テーマのアップロード」から `dist/shikipress-1.1.9.zip` を選びます。
 3. 既存サイトへの適用前にデータベースと wp-content 全体をバックアップし、ステージングで確認してください。
 
 GitHub の「Download ZIP」は開発資料も含むソース一式です。そのまま WordPress にアップロードせず、上記のテーマ ZIP を使ってください。1.1.0からはGitHubの正式Releaseを確認し、WordPress標準の管理画面から更新できます。1.1.0の更新検出・更新操作は利用でき、1.1.1では管理画面の「詳細」を通常のGitHub Releaseリンクに変更しています。1.1.2ではShikiPressダッシュボードに標準の自動更新ON/OFFを追加しています。管理者が有効にすると、以後の正式版をWordPressがバックグラウンドでインストールします。詳細は[管理画面でのテーマ更新](docs/theme-updates.md)を参照してください。
@@ -39,7 +39,7 @@ GitHub の「Download ZIP」は開発資料も含むソース一式です。そ�
 
 ## 開発・テスト
 
-開発スクリプトと統合テストは使い捨てのローカル環境専用です。本番DBや既存の実データへ向けて実行しないでください。通常の開発環境では PHP/MySQL系DB/WP-CLI が必要です。ブラウザテストには Playwright が必要です。
+開発スクリプトと統合テストは使い捨てのローカル環境専用です。本番DBや既存の実データへ向けて実行しないでください。開発用DB（127.0.0.1:3307）のrootにはパスワードを設定しないため、複数の利用者が使うマシンでは使わないでください（DBからのファイル入出力は非公開の状態ディレクトリ内に限定し、開発サイトのテーマファイル編集は無効にしています）。通常の開発環境では PHP/MySQL系DB/WP-CLI が必要です。ブラウザテストには Playwright が必要です。
 
 - `python3 scripts/package.py dist`: テーマZIPを生成
 - `find shikipress -name '*.php' -print0 | xargs -0 -n1 php -l`: PHP構文チェック

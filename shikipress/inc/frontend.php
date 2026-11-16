@@ -117,12 +117,25 @@ function shiki_card($item, $heading_level = 3, $columns = 3) {
             // wp_trim_words() counts characters only in locales that say so. On any other site
             // language, Japanese text has no spaces to count and would be printed in full, so the
             // result is also bounded in characters (46 words of spaced text stay below this bound).
-            $shiki_excerpt = wp_trim_words(wp_strip_all_tags($item->post_excerpt ?: strip_shortcodes($item->post_content)), 46, '…');
+            $shiki_excerpt = wp_trim_words(wp_strip_all_tags($item->post_excerpt ?: shiki_excerpt_source($item->post_content)), 46, '…');
             if (mb_strlen($shiki_excerpt) > 400) { $shiki_excerpt = mb_substr($shiki_excerpt, 0, 399) . '…'; }
             echo esc_html($shiki_excerpt); ?></p>
         </div>
     </article>
     <?php
+}
+
+/**
+ * Body text for an automatic excerpt, prepared as core prepares one (wp_trim_excerpt): shortcodes removed,
+ * only text blocks kept, hidden blocks (WordPress 6.9 and later) and footnotes left out. Content filters
+ * are not applied, so no plugin output or theme table of contents enters a card or a description.
+ */
+function shiki_excerpt_source($content) {
+    if (!is_string($content) || '' === $content) { return ''; }
+    $content = strip_shortcodes($content);
+    if (function_exists('excerpt_remove_blocks')) { $content = excerpt_remove_blocks($content); }
+    if (function_exists('excerpt_remove_footnotes')) { $content = excerpt_remove_footnotes($content); }
+    return $content;
 }
 
 function shiki_render_cards($posts) {
@@ -189,28 +202,29 @@ function shiki_toc($content) {
     $headings = [];
     $index = 0;
     $active = null;
-    $template_depth = 0;
+    $inert_depth = 0;
+    // A heading ends at any heading end tag, or where another heading starts, as a browser parses it.
+    $finish = static function () use (&$active, &$headings) {
+        if ($active === null) { return; }
+        $collapsed = preg_replace('/\s+/u', ' ', $active['text']);
+        $active['text'] = trim(is_string($collapsed) ? $collapsed : (string) wp_check_invalid_utf8($active['text']));
+        if ($active['text'] !== '') { $headings[] = $active; }
+        $active = null;
+    };
     $processor = new WP_HTML_Tag_Processor($content);
-    // Tokenize actual HTML; headings embedded in JSON/script/style are raw text,
-    // and inert template headings are not part of the reader's document.
+    // Tokenize actual HTML; headings embedded in JSON/script/style are raw text. Inert template
+    // headings, and noscript content (raw text whenever scripting is on), are not part of the reader's document.
     while ($processor->next_token()) {
         $type = $processor->get_token_type();
         $tag = $processor->get_tag();
-        if ($type === '#tag' && $tag === 'TEMPLATE') {
-            $template_depth = max(0, $template_depth + ($processor->is_tag_closer() ? -1 : 1));
+        if ($type === '#tag' && in_array($tag, ['TEMPLATE', 'NOSCRIPT'], true)) {
+            $inert_depth = max(0, $inert_depth + ($processor->is_tag_closer() ? -1 : 1));
             continue;
         }
-        if ($template_depth > 0) { continue; }
-        if ($type === '#tag' && in_array($tag, ['H2', 'H3'], true)) {
-            if ($processor->is_tag_closer()) {
-                if ($active !== null && $active['level'] === (int) substr($tag, 1)) {
-                    $collapsed = preg_replace('/\s+/u', ' ', $active['text']);
-                    $active['text'] = trim(is_string($collapsed) ? $collapsed : (string) wp_check_invalid_utf8($active['text']));
-                    if ($active['text'] !== '') { $headings[] = $active; }
-                    $active = null;
-                }
-                continue;
-            }
+        if ($inert_depth > 0) { continue; }
+        if ($type === '#tag' && in_array($tag, ['H1', 'H2', 'H3', 'H4', 'H5', 'H6'], true)) {
+            $finish();
+            if ($processor->is_tag_closer() || !in_array($tag, ['H2', 'H3'], true)) { continue; }
             $index++;
             $existing = $processor->get_attribute('id');
             $id = is_string($existing) ? $existing : '';
@@ -227,10 +241,11 @@ function shiki_toc($content) {
             $active['text'] .= ' ';
         }
     }
+    $finish();
     $content = $processor->get_updated_html();
     if (count($headings) < 2) { return $content; }
     $toc = '<details class="article-toc" open><summary><span>この記事の目次</span><span class="toc-toggle">開く・閉じる</span></summary><ol>';
-    foreach ($headings as $heading) { $toc .= '<li class="toc-level-' . $heading['level'] . '"><a href="#' . esc_attr(rawurlencode($heading['id'])) . '">' . esc_html($heading['text']) . '</a></li>'; }
+    foreach ($headings as $heading) { $toc .= '<li class="toc-level-' . $heading['level'] . '"><a href="#' . esc_attr(rawurlencode($heading['id'])) . '">' . htmlspecialchars($heading['text'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8', true) . '</a></li>'; }
     return $toc . '</ol></details>' . $content;
 }
 add_filter('the_content', function ($content) {
@@ -254,33 +269,52 @@ add_filter('the_password_form', function ($form) {
 }, 20);
 
 add_filter('wp_nav_menu_objects', function ($items) {
+    if (!is_array($items)) { return $items; }
     $public_page_ids = array_map(function ($page) { return $page->ID; }, shiki_public_pages());
     $visible_category_ids = array_map(function ($row) { return (int) $row['term']->term_id; }, shiki_visible_categories());
-    $public_post = function ($id) use ($public_page_ids) {
+    // Hiding the front or posts page from page lists never removes the way to the site's home
+    // from a menu (the sitemap treats them the same way); they must still be published and unprotected.
+    $reading_ids = 'page' === get_option('show_on_front') ? array_values(array_filter([(int) get_option('page_on_front'), (int) get_option('page_for_posts')])) : [];
+    $front_id = 'page' === get_option('show_on_front') ? (int) get_option('page_on_front') : 0;
+    $public_post = function ($id) use ($public_page_ids, $reading_ids) {
         $post = get_post($id);
-        if (!$post || $post->post_status !== 'publish' || $post->post_password !== '' || (string) get_post_meta($post->ID, '_shiki_exclude', true) === '1') { return false; }
+        if (!$post || $post->post_status !== 'publish' || $post->post_password !== '') { return false; }
+        if ($post->post_type === 'page' && in_array((int) $post->ID, $reading_ids, true)) { return true; }
+        if ((string) get_post_meta($post->ID, '_shiki_exclude', true) === '1') { return false; }
         if ($post->post_type === 'page') { return in_array((int) $post->ID, $public_page_ids, true); }
         $excluded = array_map('absint', (array) shiki_option('category_exclude', []));
         return $post->post_type !== 'post' || !$excluded || !has_category($excluded, $post);
     };
-    return array_filter($items, function ($item) use ($visible_category_ids, $public_post) {
+    // The address of every category that is not offered publicly, built once per menu instead of once per link.
+    $hidden_term_urls = null;
+    $hidden_terms = function () use (&$hidden_term_urls, $visible_category_ids) {
+        if (null !== $hidden_term_urls) { return $hidden_term_urls; }
+        $hidden_term_urls = [];
+        $all_terms = get_terms(['taxonomy' => 'category', 'hide_empty' => false, 'exclude' => $visible_category_ids ?: [], 'update_term_meta_cache' => false]);
+        if (!is_wp_error($all_terms)) { foreach ($all_terms as $term) {
+            $term_url = get_term_link($term);
+            if (!is_wp_error($term_url)) { $hidden_term_urls[untrailingslashit($term_url)] = true; }
+        } }
+        return $hidden_term_urls;
+    };
+    $home = untrailingslashit(home_url('/'));
+    $site_host = wp_parse_url(home_url('/'), PHP_URL_HOST);
+    return array_filter($items, function ($item) use ($visible_category_ids, $public_post, $hidden_terms, $home, $site_host, $front_id) {
         if ($item->object === 'page' || $item->object === 'post') { return $public_post($item->object_id); }
         if ($item->object === 'category') { return in_array((int) $item->object_id, $visible_category_ids, true); }
-        if ($item->type === 'custom') {
+        if ($item->type === 'custom' && is_string($item->url)) {
             $target_host = wp_parse_url($item->url, PHP_URL_HOST);
-            $site_host = wp_parse_url(home_url('/'), PHP_URL_HOST);
             if (!$target_host || $target_host === $site_host) {
                 $url = !$target_host && !str_starts_with($item->url, '#') ? home_url('/' . ltrim($item->url, '/')) : $item->url;
+                $address = untrailingslashit((string) preg_replace('/[?#].*$/s', '', $url));
                 $post_id = url_to_postid($url);
+                // url_to_postid() resolves the home address, with any other query, to the front page; the home itself is always reachable.
+                if ($post_id && $address === $home && $post_id === $front_id) { $post_id = 0; }
                 if ($post_id && !$public_post($post_id)) { return false; }
                 $query_args = [];
                 parse_str((string) wp_parse_url($url, PHP_URL_QUERY), $query_args);
                 if (isset($query_args['cat']) && !in_array(absint($query_args['cat']), $visible_category_ids, true)) { return false; }
-                $all_terms = get_terms(['taxonomy' => 'category', 'hide_empty' => false]);
-                if (!is_wp_error($all_terms)) { foreach ($all_terms as $term) {
-                    $term_url = get_term_link($term);
-                    if (!is_wp_error($term_url) && untrailingslashit(preg_replace('/[?#].*$/', '', $url)) === untrailingslashit($term_url) && !in_array((int) $term->term_id, $visible_category_ids, true)) { return false; }
-                } }
+                if ($address !== $home && isset($hidden_terms()[$address])) { return false; }
             }
         }
         return true;

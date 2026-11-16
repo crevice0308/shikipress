@@ -27,4 +27,4 @@
 /* Keep Google's legal badge visible and usable above the fixed mobile tabs.
    Its provider-owned challenge dialog keeps its own stacking and geometry. */
 .grecaptcha-badge{z-index:450!important}
-@media(max-width:767px){.grecaptcha-badge{bottom:calc(var(--tab-height,72px) + env(safe-area-inset-bottom,0px) + 14px)!important}}
+@media(max-width:900px){.grecaptcha-badge{bottom:calc(var(--tab-height,72px) + env(safe-area-inset-bottom,0px) + 14px)!important}}

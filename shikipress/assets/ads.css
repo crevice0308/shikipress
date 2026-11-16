@@ -7,3 +7,6 @@
 .shiki-ad[data-state="delay"] .shiki-ad__body{background:linear-gradient(135deg,transparent,rgba(128,128,128,.08))}
 .shiki-ad[data-state="test"] .shiki-ad__body{border:1px dashed currentColor}
 @media(prefers-color-scheme:dark){.shiki-ad{background:var(--surface,#202922);color:var(--ink,#eeeae2)}.shiki-ad__label{color:var(--muted,#c7cdc8)}}
+/* A slot limited to one kind of device stays hidden on the other from the first paint (ads.js uses the same 767px boundary). */
+@media(min-width:768px){.shiki-ad[data-device="mobile"]{display:none}}@media(max-width:767px){.shiki-ad[data-device="desktop"]{display:none}}
+@media print{.shiki-ad{display:none!important}}

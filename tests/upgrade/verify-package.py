@@ -6,9 +6,14 @@ if a.build:
  root=pathlib.Path(a.path).resolve();archive=pathlib.Path(a.value)
  assert root.name=='shikipress' and (root/'style.css').is_file()
  with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED) as z:
-  for f in sorted(root.rglob('*')):
+  for f in sorted(root.rglob('*'),key=lambda item:item.relative_to(root).as_posix()):
    assert not f.is_symlink(),f
-   if f.is_file():z.write(f,'shikipress/'+str(f.relative_to(root)))
+   if f.is_file():
+    rel=f.relative_to(root).as_posix()
+    # The release publisher refuses these; fail in CI before a version bump reaches main.
+    assert (f.suffix in {'.php','.css','.js','.json','.svg','.png'} or rel=='LICENSE') and not any(x.startswith('.') for x in rel.split('/')),'release would refuse '+rel
+    assert not f.stat().st_mode&0o111,'executable theme file '+rel
+    z.write(f,'shikipress/'+rel)
 else:archive=pathlib.Path(a.path)
 with zipfile.ZipFile(archive) as z:
  names=z.namelist();assert names and len(names)==len(set(names))

@@ -22,10 +22,10 @@
             $shiki_primary_menu = has_nav_menu('primary') ? wp_nav_menu(['theme_location' => 'primary', 'container' => false, 'menu_class' => 'primary-menu', 'depth' => 1, 'fallback_cb' => false, 'echo' => false]) : '';
             if ($shiki_primary_menu) { echo $shiki_primary_menu; /* Core menu markup, escaped by the walker. */ } else { ?>
                 <a href="<?php echo esc_url(home_url('/')); ?>" <?php if (is_front_page()) { echo 'aria-current="page"'; } ?>>ホーム</a>
-                <a href="#nav-categories" data-panel="nav-categories" aria-controls="nav-categories" aria-expanded="false">四季の暮らし</a>
-                <a href="#nav-pages" data-panel="nav-pages" aria-controls="nav-pages" aria-expanded="false">このサイトについて</a>
+                <a href="#nav-categories" data-panel="nav-categories" aria-controls="nav-categories">四季の暮らし</a>
+                <a href="#nav-pages" data-panel="nav-pages" aria-controls="nav-pages">このサイトについて</a>
             <?php } ?>
         </nav>
-        <div class="header-actions"><button class="icon-button theme-toggle" type="button" aria-label="ダークモードに切り替える" hidden><?php echo shiki_icon('sun'); ?></button><a class="icon-button" href="#nav-search" data-panel="nav-search" aria-controls="nav-search" aria-expanded="false" aria-label="検索を開く"><?php echo shiki_icon('search'); ?></a></div>
+        <div class="header-actions"><button class="icon-button theme-toggle" type="button" aria-label="ダークモード" aria-pressed="false" hidden><?php echo shiki_icon('sun'); ?></button><a class="icon-button" href="#nav-search" data-panel="nav-search" aria-controls="nav-search" aria-label="検索を開く"><?php echo shiki_icon('search'); ?></a></div>
     </div>
 </header>

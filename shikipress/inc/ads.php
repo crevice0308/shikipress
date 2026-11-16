@@ -38,7 +38,7 @@ function shiki_ads_blank_slot(string $id): array {
     return ['id' => $id, 'name' => '新しい広告枠', 'service' => 'adsense', 'state' => 'off', 'position' => 'below', 'device' => 'all', 'post_types' => ['post'], 'exclude_ids' => [], 'exclude_categories' => [], 'interval' => 3, 'limit' => 1, 'height' => 250, 'min_width' => 0, 'dummy' => 'ready', 'publisher' => '', 'ad_slot' => '', 'code' => '', 'trusted' => false, 'vendors' => [755], 'purposes' => [1, 3, 4], 'shared_loaders' => []];
 }
 function shiki_ads_ids($value): array {
-    if (!is_array($value)) { $value = is_scalar($value) ? preg_split('/[\s,]+/', (string) $value) : []; }
+    $value = function_exists('shiki_id_list_parts') ? shiki_id_list_parts($value) : (is_array($value) ? $value : (is_scalar($value) ? preg_split('/[\s,]+/', (string) $value) : []));
     return array_values(array_unique(array_filter(array_map('absint', array_filter($value, 'is_scalar')))));
 }
 function shiki_ads_choice($value, array $choices, string $fallback): string {
@@ -79,13 +79,29 @@ add_filter('shiki_sanitize_settings', function ($out, $input, $section) {
         $out['ads_cmp_trusted'] = (bool) shiki_option('ads_cmp_trusted', false);
     }
     $out['ads_cmp_enabled'] = !empty($input['ads_cmp_enabled']) && !empty($out['ads_cmp_trusted']);
-    $previous = shiki_option('ads_slots', []); $slots = [];
-    foreach (array_values(array_slice(is_array($input['ads_slots'] ?? null) ? $input['ads_slots'] : [], 0, 24)) as $index => $row) {
+    $previous = []; $slots = []; $claimed = []; $notices = [];
+    foreach ((array) shiki_option('ads_slots', []) as $previous_row) { if (is_array($previous_row) && is_string($previous_row['id'] ?? null) && !isset($previous[$previous_row['id']])) { $previous[$previous_row['id']] = $previous_row; } }
+    $rows = array_values(array_slice(is_array($input['ads_slots'] ?? null) ? $input['ads_slots'] : [], 0, 24));
+    // IDs the submitted rows will keep, so that a row whose ID has to be replaced never takes one of them.
+    $wanted = [];
+    foreach ($rows as $row) { if (is_array($row) && empty($row['delete']) && is_scalar($row['id'] ?? null)) { $wanted[sanitize_key((string) $row['id'])] = true; } }
+    foreach ($rows as $index => $row) {
         if (!is_array($row) || !empty($row['delete'])) { continue; }
-        $id = sanitize_key($row['id'] ?? ('slot-' . ($index + 1)));
-        if ('' === $id || isset($slots[$id])) { continue; }
+        // The ID a saved row was rendered with. Code and the execution approval stay with that slot when an
+        // administrator without unfiltered_html renames it; each saved slot can be claimed by one row only.
+        $original = is_string($row['original_id'] ?? null) ? sanitize_key($row['original_id']) : '';
+        if ('' !== $original && (!isset($previous[$original]) || isset($claimed[$original]))) { $original = ''; }
+        $id = array_key_exists('id', $row) ? (is_scalar($row['id']) ? sanitize_key((string) $row['id']) : '') : 'slot-' . ($index + 1);
+        if ('' === $id || isset($slots[$id])) {
+            // Never drop a row (and its code) silently: keep its saved ID or take a free one, and say so.
+            $label = is_scalar($row['name'] ?? null) ? sanitize_text_field((string) $row['name']) : '';
+            if ('' !== $original && !isset($slots[$original])) { $id = $original; }
+            else { $number = count($slots) + 1; while (isset($slots['slot-' . $number]) || isset($wanted['slot-' . $number]) || isset($previous['slot-' . $number])) { $number++; } $id = 'slot-' . $number; }
+            $notices[] = sprintf('広告枠「%1$s」の枠IDが空・使用できない文字だけ・他の枠と重複していたため、%2$s として保存しました。', '' !== $label ? $label : $id, $id);
+        }
+        $old = '' !== $original ? $previous[$original] : ((!isset($claimed[$id]) && isset($previous[$id])) ? $previous[$id] : []);
+        if ($old) { $claimed[$old['id']] = true; }
         $service = shiki_ads_choice($row['service'] ?? '', shiki_ads_services(), 'generic');
-        $old = []; foreach ((array) $previous as $previous_row) { if (($previous_row['id'] ?? '') === $id) { $old = $previous_row; break; } }
         $code = $can_code && is_string($row['code'] ?? null) ? substr($row['code'], 0, 100000) : ($old['code'] ?? '');
         $parsed = 'adsense' === $service ? shiki_ads_parse_adsense($code) : [];
         $publisher = shiki_ads_pub($row['publisher'] ?? '') ?: ($parsed['publisher'] ?? '');
@@ -115,8 +131,11 @@ add_filter('shiki_sanitize_settings', function ($out, $input, $section) {
         ];
         // The screen always offers one extra row. Saved exactly as offered, it is not a slot the
         // administrator created; storing it would add another disabled slot on every save.
-        if (!$old && !empty($row['template']) && $slots[$id] == shiki_ads_blank_slot($id)) { unset($slots[$id]); }
+        // An ID typed into the row is a change too, although the default values follow the ID.
+        $offered = is_string($row['offered_id'] ?? null) ? sanitize_key($row['offered_id']) : $id;
+        if (!$old && !empty($row['template']) && $offered === $id && $slots[$id] == shiki_ads_blank_slot($id)) { unset($slots[$id]); }
     }
+    foreach ($notices as $notice) { add_settings_error('shikipress_settings', 'shiki_ads_slot_id', $notice, 'warning'); }
     $out['ads_slots'] = array_values($slots);
     if (!$out['ads_live_approved']) { $out['ads_mode'] = 'production' === $out['ads_mode'] ? 'test' : $out['ads_mode']; }
     return $out;
@@ -134,7 +153,9 @@ function shiki_ads_page_allowed(array $slot): bool {
         if (!in_array($post->post_type, (array) ($slot['post_types'] ?? ['post']), true) || in_array($post->ID, (array) ($slot['exclude_ids'] ?? []), true)) { return false; }
         if (!empty($slot['exclude_categories']) && has_category((array) $slot['exclude_categories'], $post)) { return false; }
     } elseif (is_front_page() || is_home()) {
-        $public = shiki_public_posts(['posts_per_page' => 1, 'fields' => 'ids']); if (!$public->have_posts()) { return false; }
+        $page = get_queried_object();
+        if ($page instanceof WP_Post && ('1' === (string) get_post_meta($page->ID, '_shiki_exclude', true) || in_array($page->ID, (array) ($slot['exclude_ids'] ?? []), true))) { return false; }
+        $public = shiki_public_posts(['posts_per_page' => 1, 'fields' => 'ids', 'no_found_rows' => true]); if (!$public->have_posts()) { return false; }
     } else { return false; }
     return true;
 }
@@ -149,19 +170,18 @@ function shiki_ads_render_slot(array $slot, bool $count = true): string {
     $mode = shiki_option('ads_mode', 'test');
     if ('off' === $mode || 'off' === ($slot['state'] ?? 'off') || !shiki_ads_page_allowed($slot)) { return ''; }
     $id = (string) ($slot['id'] ?? '');
+    $production = 'production' === $mode && 'production' === ($slot['state'] ?? '') && shiki_ads_environment_allowed();
+    if ($production && 'adsense' !== ($slot['service'] ?? 'generic') && empty($slot['trusted'])) { return ''; }
     if ($count && (($counts[$id] ?? 0) >= ($slot['limit'] ?? 1) || $total >= shiki_option('ads_limit', 5))) { return ''; }
     if ($count) { $counts[$id] = ($counts[$id] ?? 0) + 1; $total++; }
-    $production = 'production' === $mode && 'production' === ($slot['state'] ?? '') && shiki_ads_environment_allowed();
     $payload = ['token' => shiki_ads_render_token(), 'service' => $slot['service'] ?? 'generic', 'device' => $slot['device'] ?? 'all', 'mode' => $production ? 'production' : 'test', 'dummy' => $slot['dummy'] ?? 'ready', 'minWidth' => max(0, min(2000, absint($slot['min_width'] ?? 0)))];
     if ($production) {
         $payload += ['publisher' => ($slot['publisher'] ?? '') ?: shiki_option('ads_publisher', ''), 'adSlot' => $slot['ad_slot'] ?? '', 'vendors' => $slot['vendors'] ?? [], 'purposes' => $slot['purposes'] ?? [1,3,4], 'sharedLoaders' => $slot['shared_loaders'] ?? []];
-        if ('adsense' !== $payload['service']) {
-            if (empty($slot['trusted'])) { return ''; }
-            $payload['code'] = $slot['code'] ?? '';
-        }
+        if ('adsense' !== $payload['service']) { $payload['code'] = $slot['code'] ?? ''; }
     }
     $instance++; wp_enqueue_style('shiki-ads'); wp_enqueue_script('shiki-ads');
-    return '<aside class="shiki-ad" id="shiki-ad-' . $instance . '" aria-label="広告" data-shiki-ad="' . esc_attr(base64_encode(wp_json_encode($payload))) . '" style="--shiki-ad-height:' . absint($slot['height'] ?? 250) . 'px"><span class="shiki-ad__label">広告 / PR</span><div class="shiki-ad__body"><span class="shiki-ad__status">' . ($production ? '広告を準備中' : 'TEST 広告枠') . '</span></div></aside>';
+    $device = in_array($slot['device'] ?? 'all', ['mobile', 'desktop'], true) ? ' data-device="' . esc_attr($slot['device']) . '"' : '';
+    return '<aside class="shiki-ad" id="shiki-ad-' . $instance . '" aria-label="広告"' . $device . ' data-shiki-ad="' . esc_attr(base64_encode(wp_json_encode($payload))) . '" style="--shiki-ad-height:' . absint($slot['height'] ?? 250) . 'px"><span class="shiki-ad__label">広告 / PR</span><div class="shiki-ad__body"><span class="shiki-ad__status">' . ($production ? '広告を準備中' : 'TEST 広告枠') . '</span></div></aside>';
 }
 function shiki_ad_html(string $position): string {
     $html = '';
@@ -171,6 +191,14 @@ function shiki_ad_html(string $position): string {
     return $html;
 }
 function shiki_ad(string $position): void { echo shiki_ad_html($position); /* HTML escaped at source. */ }
+/** Whether any stored post (including drafts and revisions) contains an ad block naming this slot ID. */
+function shiki_ads_id_referenced(string $id): bool {
+    global $wpdb;
+    $id = sanitize_key($id);
+    if ('' === $id) { return false; }
+    $needle = '%' . $wpdb->esc_like('"slot":"' . $id . '"') . '%';
+    return (bool) $wpdb->get_var($wpdb->prepare("SELECT 1 FROM {$wpdb->posts} WHERE post_content LIKE %s AND post_content LIKE %s LIMIT 1", '%' . $wpdb->esc_like('wp:shikipress/ad-slot') . '%', $needle));
+}
 function shiki_ads_named_slot(string $id): string {
     if ('' === $id) { return ''; }
     foreach ((array) shiki_option('ads_slots', []) as $slot) { if (is_array($slot) && ($slot['id'] ?? '') === $id) { return shiki_ads_render_slot($slot); } }
@@ -257,7 +285,8 @@ function shiki_ads_insert_classic(string $html, array $slots): ?string {
 
 /** Block content: insert between top-level blocks before rendering. Classic content: insert after wpautop and shortcodes. */
 add_filter('the_content', function ($content) {
-    if (!shiki_ads_content_context()) { shiki_ads_classic_pending(false); return $content; }
+    // Another filter may hand over a non-string; leave it as received.
+    if (!is_string($content) || !shiki_ads_content_context()) { shiki_ads_classic_pending(false); return $content; }
     if (!has_blocks($content)) { shiki_ads_classic_pending(true); return $content; }
     shiki_ads_classic_pending(false);
     $slots = shiki_ads_content_slots(); $body = $content;
@@ -279,7 +308,7 @@ add_filter('the_content', function ($content) {
     return shiki_ad_html('above') . $body . shiki_ad_html('below');
 }, 8);
 add_filter('the_content', function ($content) {
-    if (!shiki_ads_classic_pending() || !shiki_ads_content_context()) { return $content; }
+    if (!shiki_ads_classic_pending() || !is_string($content) || !shiki_ads_content_context()) { return $content; }
     $slots = shiki_ads_content_slots();
     $body = $slots ? (shiki_ads_insert_classic($content, $slots) ?? $content) : $content;
     return shiki_ad_html('above') . $body . shiki_ad_html('below');
@@ -365,14 +394,17 @@ add_action('shiki_admin_tab_ads', function () {
         // The extra row needs an ID no saved slot uses, also after an earlier slot was deleted;
         // a repeated ID would be dropped on save together with everything entered in the row.
         $used = array_map(static fn($slot) => is_scalar($slot['id'] ?? null) ? (string) $slot['id'] : '', $slots); $number = count($slots) + 1;
-        while (in_array('slot-' . $number, $used, true)) { $number++; }
+        // A deleted slot's ID may still be named by ad blocks in posts; offering it again would make them
+        // show the new slot. Skip IDs that any post content still references.
+        while (in_array('slot-' . $number, $used, true) || shiki_ads_id_referenced('slot-' . $number)) { $number++; }
         $slots[] = shiki_ads_blank_slot('slot-' . $number) + ['template' => true];
     }
     foreach ($slots as $index => $slot) {
         $prefix = 'shikipress_settings[ads_slots][' . $index . ']';
         $text = static fn(string $key, string $fallback = '') => is_scalar($slot[$key] ?? null) ? (string) $slot[$key] : $fallback;
         echo '<details class="shiki-ads-slot"><summary>' . esc_html($text('name', $text('id'))) . '</summary><div class="shiki-ads-grid">';
-        if (!empty($slot['template'])) { echo '<input type="hidden" name="' . esc_attr($prefix . '[template]') . '" value="1">'; }
+        if (!empty($slot['template'])) { echo '<input type="hidden" name="' . esc_attr($prefix . '[template]') . '" value="1"><input type="hidden" name="' . esc_attr($prefix . '[offered_id]') . '" value="' . esc_attr($text('id')) . '">'; }
+        else { echo '<input type="hidden" name="' . esc_attr($prefix . '[original_id]') . '" value="' . esc_attr($text('id')) . '">'; }
         shiki_ads_admin_field('枠ID（半角英数・ハイフン）', $prefix . '[id]', $text('id'));
         shiki_ads_admin_field('管理名', $prefix . '[name]', $text('name'));
         echo '<label>サービス '; shiki_ads_admin_select($prefix . '[service]', $text('service', 'adsense'), shiki_ads_services()); echo '</label>';

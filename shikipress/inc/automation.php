@@ -17,7 +17,7 @@ add_filter('shiki_defaults', function (array $defaults): array {
     ]);
 });
 function shiki_auto_ids($value, int $limit = 100): array {
-    if (!is_array($value)) { $value = preg_split('/[\s,]+/', (string) $value); }
+    $value = function_exists('shiki_id_list_parts') ? shiki_id_list_parts($value) : (is_array($value) ? $value : preg_split('/[\s,]+/', is_scalar($value) ? (string) $value : ''));
     return array_slice(array_values(array_unique(array_filter(array_map('absint', array_filter($value, 'is_scalar'))))), 0, $limit);
 }
 function shiki_valid_month_day(string $value): bool {
@@ -138,7 +138,7 @@ function shiki_classify_post($post): array {
         $scores[$season] = 0; $reasons[$season] = [];
         foreach ($fields as $field => [$text, $weight]) {
             foreach ($words as $word) {
-                $matched = preg_match('/^[a-z]+$/i', $word) ? preg_match('/\b' . preg_quote($word, '/') . '\b/i', $text) : mb_stripos($text, $word) !== false;
+                $matched = preg_match('/^[a-z]+$/i', $word) ? preg_match('/\b' . preg_quote($word, '/') . '\b/i', $text) : (function_exists('mb_stripos') ? mb_stripos($text, $word) : stripos($text, $word)) !== false;
                 if ($matched) { $scores[$season] += $weight; $reasons[$season][] = $field . '「' . $word . '」'; }
             }
         }
@@ -196,7 +196,7 @@ function shiki_adopt_slug(int $post_id, string $candidate, bool $explicit = fals
     return $slug;
 }
 add_action('transition_post_status', function ($new, $old, $post = null): void {
-    if ($post instanceof WP_Post && ($new === 'publish' || $old === 'publish')) { update_post_meta($post->ID, '_shiki_ever_published', 1); }
+    if ($post instanceof WP_Post && in_array($post->post_type, ['post', 'page'], true) && ($new === 'publish' || $old === 'publish')) { update_post_meta($post->ID, '_shiki_ever_published', 1); }
 }, 10, 3);
 // Plugins sometimes fire save_post with fewer or untyped arguments; the handlers below
 // accept that instead of failing the save. Only core's explicit $update === false is a new post.
@@ -208,6 +208,10 @@ add_action('save_post', function ($post_id = 0, $post = null): void {
     static $busy = false;
     $post = shiki_saved_post($post_id, $post); if (!$post) { return; } $post_id = (int) $post->ID;
     if ($busy || wp_is_post_revision($post_id) || wp_is_post_autosave($post_id) || !in_array($post->post_type, ['post', 'page'], true) || $post->post_status === 'auto-draft') { return; }
+    // The one-time automatic step waits for a real save with the author's lock choices: an autosave
+    // (which also rewrites the author's own draft) carries a partial title and no lock fields, and the
+    // block editor sends its meta boxes, with the lock fields, right after its REST save (marked _locale=user).
+    if ((defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) || (defined('REST_REQUEST') && REST_REQUEST && 'user' === ($_GET['_locale'] ?? null))) { return; }
     if (!get_post_meta($post_id, '_shiki_draft_seen', true)) {
         update_post_meta($post_id, '_shiki_draft_seen', 1);
         if ($post->post_status !== 'draft' || !get_post_meta($post_id, '_shiki_new_theme_draft', true)) { return; }
@@ -230,6 +234,9 @@ add_action('add_meta_boxes', function (): void {
 function shiki_automation_metabox(WP_Post $post): void {
     if (!current_user_can('edit_post', $post->ID)) { return; }
     wp_nonce_field('shiki_editor_' . $post->ID, 'shiki_editor_nonce');
+    // The block editor sends this form again with every later save, still checked; one token per rendered
+    // screen (renewed by automation.js when a box is checked again) makes each explicit choice apply once.
+    echo '<input type="hidden" name="shiki_apply_token" id="shiki-apply-token" value="' . esc_attr(wp_generate_password(20, false, false)) . '">';
     $candidate = shiki_slug_candidate($post->post_title); $classification = shiki_classify_post($post); $mapping = shiki_season_terms();
     echo '<p>辞書方式は季節・暮らしの限定語彙に対応します。未知の文章は自動翻訳せず候補なしと表示します。</p>';
     if ($post->post_type === 'post') {
@@ -248,7 +255,7 @@ function shiki_automation_metabox(WP_Post $post): void {
     if (shiki_slug_editable($post)) {
         echo '<p><label><input type="checkbox" name="shiki_apply_slug" value="1"> 保存時にこの候補を採用（明示した下書きURLの変更）</label></p>';
         echo '<button type="button" class="button shiki-regenerate" data-post="' . (int) $post->ID . '">辞書から再生成</button> ';
-        if (shiki_option('deepl_enabled')) {
+        if (shiki_option('deepl_enabled') && shiki_deepl_allowed($post)) {
             echo '<p><label><input id="shiki-deepl-consent" type="checkbox"> 現在保存済みのタイトルだけをDeepLへ送ることを承認します。契約により料金が発生します。</label></p>';
             echo '<button type="button" class="button shiki-translate" data-post="' . (int) $post->ID . '">DeepL候補を作成</button>';
         }
@@ -263,12 +270,15 @@ add_action('save_post', function ($post_id = 0, $post = null): void {
     update_post_meta($post_id, '_shiki_classification_lock', !empty($_POST['shiki_classification_lock']) ? 1 : 0);
     update_post_meta($post_id, '_shiki_slug_lock', !empty($_POST['shiki_slug_lock']) ? 1 : 0);
     if (current_user_can('edit_others_posts') && isset($_POST['shiki_priority']) && is_scalar($_POST['shiki_priority'])) { update_post_meta($post_id, '_shiki_priority', min(100, max(0, (int) $_POST['shiki_priority']))); }
-    if ($post->post_type === 'post' && !empty($_POST['shiki_apply_classification'])) {
+    $apply_token = isset($_POST['shiki_apply_token']) && is_string($_POST['shiki_apply_token']) ? preg_replace('/[^A-Za-z0-9]/', '', wp_unslash($_POST['shiki_apply_token'])) : '';
+    $fresh = '' !== $apply_token && !hash_equals((string) get_post_meta($post_id, '_shiki_apply_token_used', true), $apply_token);
+    if ($fresh && (!empty($_POST['shiki_apply_classification']) || !empty($_POST['shiki_apply_slug']))) { update_post_meta($post_id, '_shiki_apply_token_used', $apply_token); }
+    if ($fresh && $post->post_type === 'post' && !empty($_POST['shiki_apply_classification'])) {
         $mapping = shiki_season_terms(); $terms = [];
         foreach ((array) ($_POST['shiki_classification'] ?? []) as $season) { if (is_string($season) && isset($mapping[$season])) { $terms[] = $mapping[$season]; } }
         if ($terms) { wp_set_post_categories($post_id, array_unique(array_merge(wp_get_post_categories($post_id), $terms))); update_post_meta($post_id, '_shiki_classification_applied', 'manual'); }
     }
-    if (!empty($_POST['shiki_apply_slug']) && isset($_POST['shiki_slug_candidate'])) { shiki_adopt_slug($post_id, sanitize_text_field(wp_unslash($_POST['shiki_slug_candidate'])), true); }
+    if ($fresh && !empty($_POST['shiki_apply_slug']) && isset($_POST['shiki_slug_candidate'])) { shiki_adopt_slug($post_id, sanitize_text_field(wp_unslash($_POST['shiki_slug_candidate'])), true); }
     // Editor fields of a draft change nothing public; a published post is invalidated as before.
     shiki_invalidate_cache_for_post($post_id, get_post($post_id)); $busy = false;
 }, 30, 2);
@@ -283,7 +293,10 @@ function shiki_automation_ajax_auth(): WP_Post {
     return $post;
 }
 add_action('wp_ajax_shiki_slug_suggest', function (): void {
-    $post = shiki_automation_ajax_auth(); wp_send_json_success(shiki_slug_candidate($post->post_title));
+    $post = shiki_automation_ajax_auth();
+    // The local dictionary suggestion may use the title being edited; nothing leaves the site.
+    $title = isset($_POST['title']) && is_string($_POST['title']) ? mb_substr(sanitize_text_field(wp_unslash($_POST['title'])), 0, 200) : $post->post_title;
+    wp_send_json_success(shiki_slug_candidate($title));
 });
 function shiki_delete_job_lock_value(string $key, array $value): void {
     global $wpdb;
@@ -326,8 +339,26 @@ function shiki_deepl_request(string $title) {
     $slug = shiki_clean_english_slug($translation);
     return $slug !== '' ? $slug : new WP_Error('invalid_response', '有効な英語候補を取得できませんでした。');
 }
+/**
+ * DeepL is billed to the site owner: sending a title needs the right to publish that kind of content
+ * (not only to write a draft, as a contributor can), and new requests are capped per site and day.
+ */
+function shiki_deepl_allowed(WP_Post $post): bool {
+    $type = get_post_type_object($post->post_type);
+    $capability = (string) apply_filters('shiki_deepl_capability', $type && isset($type->cap->publish_posts) ? $type->cap->publish_posts : 'publish_posts', $post);
+    return '' !== $capability && current_user_can($capability);
+}
+function shiki_deepl_reserve_request(): bool {
+    $limit = max(0, (int) apply_filters('shiki_deepl_daily_limit', 100));
+    $day = gmdate('Y-m-d'); $usage = get_option('shikipress_deepl_usage', []);
+    $count = is_array($usage) && ($usage['day'] ?? '') === $day ? (int) ($usage['count'] ?? 0) : 0;
+    if ($count >= $limit) { return false; }
+    update_option('shikipress_deepl_usage', ['day' => $day, 'count' => $count + 1], false);
+    return true;
+}
 add_action('wp_ajax_shiki_translate_title', function (): void {
     $post = shiki_automation_ajax_auth();
+    if (!shiki_deepl_allowed($post)) { wp_send_json_error(['message' => 'DeepLへの送信には、この記事を公開できる権限が必要です。'], 403); }
     if (!shiki_slug_editable($post) || empty($_POST['consent']) || !shiki_option('deepl_enabled') || !defined('SHIKIPRESS_DEEPL_KEY') || !SHIKIPRESS_DEEPL_KEY) { wp_send_json_error(['message' => '下書き・API設定・タイトル送信の承認を確認してください。'], 400); }
     $existing = get_post_meta($post->ID, '_shiki_translation', true);
     $active_lock = get_option('shiki_translation_lock_' . $post->ID, []);
@@ -336,6 +367,7 @@ add_action('wp_ajax_shiki_translate_title', function (): void {
     if (is_array($existing) && in_array($existing['state'] ?? '', ['queued', 'working'], true) && ($existing['title_hash'] ?? '') === hash('sha256', $post->post_title) && ($scheduled || $working) && (int) ($existing['created'] ?? 0) > time() - 15 * MINUTE_IN_SECONDS) { wp_send_json_success(['state' => 'queued', 'message' => 'すでに処理待ちです。']); }
     // A finished candidate for the same saved title is reused; DeepL is never billed twice for it.
     if (is_array($existing) && 'done' === ($existing['state'] ?? '') && ($existing['title_hash'] ?? '') === hash('sha256', $post->post_title) && is_string($existing['slug'] ?? null) && '' !== $existing['slug']) { wp_send_json_success(['state' => 'done', 'slug' => $existing['slug'], 'message' => '同じタイトルで作成済みの候補を表示しました（DeepLへの再送信なし）。']); }
+    if (!shiki_deepl_reserve_request()) { wp_send_json_error(['message' => '本日のDeepL送信の上限に達しました。明日以降に再度お試しください。'], 429); }
     $token = wp_generate_password(20, false, false);
     update_post_meta($post->ID, '_shiki_translation', ['state' => 'queued', 'title_hash' => hash('sha256', $post->post_title), 'token' => $token, 'attempts' => 0, 'created' => time()]);
     wp_schedule_single_event(time() + 1, 'shiki_translate_job', [$post->ID, $token]);
@@ -398,6 +430,15 @@ add_action('wp_ajax_shiki_translation_status', function (): void {
     wp_send_json_success(['state' => $job['state'] ?? 'none', 'slug' => $job['slug'] ?? '', 'message' => $job['message'] ?? '処理待ちです。WP-Cronの実行を待ってください。']);
 });
 
+/** Term IDs of a post from the object term cache, primed once for all candidates. */
+function shiki_post_term_ids($post, string $taxonomy): array {
+    $id = is_object($post) ? (int) ($post->ID ?? 0) : (is_numeric($post) ? (int) $post : 0);
+    if ($id < 1) { return []; }
+    $terms = get_object_term_cache($id, $taxonomy);
+    if (false === $terms) { $terms = wp_get_object_terms($id, $taxonomy); }
+    if (!is_array($terms)) { return []; }
+    return array_values(array_map(static fn($term) => (int) ($term instanceof WP_Term ? $term->term_id : $term), $terms));
+}
 /** Stable selection, with a bounded pool and an explicit no-unrelated-fill rule. */
 function shiki_select_posts(string $context, array $exclude = [], int $limit = 3, int $post_id = 0): array {
     if (!in_array($context, ['featured', 'related', 'popular'], true)) { return []; }
@@ -415,16 +456,17 @@ function shiki_select_posts(string $context, array $exclude = [], int $limit = 3
     $manual = array_values(array_diff(shiki_auto_ids(shiki_option('featured_ids', [])), $exclude)); $mode = shiki_option('featured_mode', 'auto'); $mapping = shiki_season_terms();
     $current_categories = $post_id ? wp_get_post_categories($post_id) : []; $current_tags = $post_id ? wp_get_post_tags($post_id, ['fields' => 'ids']) : [];
     if (is_wp_error($current_tags)) { $current_tags = []; }
-    $args = ['posts_per_page' => 500, 'post__not_in' => $exclude, 'orderby' => ['modified' => 'DESC', 'ID' => 'DESC']];
+    $args = ['posts_per_page' => 500, 'post__not_in' => $exclude, 'orderby' => ['modified' => 'DESC', 'ID' => 'DESC'], 'no_found_rows' => true];
     if ($context === 'featured' && $mode === 'manual') {
         if (!$manual) { return []; } $args['post__in'] = $manual;
     } elseif ($context === 'featured') {
         // A hybrid may pin a published article of a different season by explicit administrator choice.
         $branches = [];
         if (!empty($mapping[$season])) { $branches[] = ['taxonomy' => 'category', 'field' => 'term_id', 'terms' => [$mapping[$season]]]; }
-        if ($mode !== 'hybrid' || !$manual) {
-            if (!$branches) { return []; } $args['tax_query'] = $branches;
-        }
+        // Pinned articles join through their own query below; the automatic candidates stay those of the season.
+        if ($branches) { $args['tax_query'] = $branches; }
+        elseif ($mode !== 'hybrid' || !$manual) { return []; }
+        else { $args['post__in'] = $manual; }
     } elseif ($context === 'related') {
         $tax = ['relation' => 'OR'];
         if ($current_categories) { $tax[] = ['taxonomy' => 'category', 'field' => 'term_id', 'terms' => $current_categories]; }
@@ -434,17 +476,29 @@ function shiki_select_posts(string $context, array $exclude = [], int $limit = 3
         if (!shiki_option('view_count_enabled')) { return []; }
         $counts = shiki_popular_counts(); if (!$counts) { return []; } $args['post__in'] = array_keys($counts);
     }
-    $query = shiki_public_posts($args); $pool = $query->posts;
+    // Candidates are scored from IDs, terms, one meta value and dates: their bodies are never loaded
+    // (500 full posts could take tens of megabytes). Only the chosen posts are fetched in full.
+    $args['fields'] = 'ids';
+    $pool = array_map('intval', shiki_public_posts($args)->posts);
     // Include explicitly pinned IDs even when they are older than the automatic 500-candidate window.
     if ($context === 'featured' && $mode === 'hybrid' && $manual) {
-        $pinned = shiki_public_posts(['post__in' => $manual, 'post__not_in' => $exclude, 'posts_per_page' => count($manual)])->posts;
-        $by_id = []; foreach (array_merge($pinned, $pool) as $candidate) { $by_id[$candidate->ID] = $candidate; } $pool = array_values($by_id);
+        $pinned = array_map('intval', shiki_public_posts(['post__in' => $manual, 'post__not_in' => $exclude, 'posts_per_page' => count($manual), 'fields' => 'ids', 'no_found_rows' => true])->posts);
+        $pool = array_values(array_unique(array_merge($pinned, $pool)));
+    }
+    $dates = [];
+    if ($pool) {
+        update_object_term_cache($pool, 'post'); update_postmeta_cache($pool);
+        global $wpdb;
+        $dates = $wpdb->get_results('SELECT ID, post_date_gmt, post_modified_gmt FROM ' . $wpdb->posts . ' WHERE ID IN (' . implode(',', $pool) . ')', OBJECT_K); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- integer IDs only.
     }
     $counts = $counts ?? (shiki_option('view_count_enabled') ? shiki_popular_counts() : []);
     $scored = [];
-    foreach ($pool as $candidate) {
-        if (in_array($candidate->ID, $exclude, true)) { continue; }
-        $categories = wp_get_post_categories($candidate->ID); $tags = wp_get_post_tags($candidate->ID, ['fields' => 'ids']); if (is_wp_error($tags)) { $tags = []; }
+    foreach ($pool as $candidate_id) {
+        $candidate = $dates[$candidate_id] ?? null;
+        if (!$candidate || in_array($candidate_id, $exclude, true)) { continue; }
+        $candidate->ID = (int) $candidate->ID;
+        // The candidate query has already loaded every candidate's terms; never query them one by one.
+        $categories = shiki_post_term_ids($candidate, 'category'); $tags = shiki_post_term_ids($candidate, 'post_tag');
         $season_match = !empty($mapping[$season]) && in_array($mapping[$season], $categories, true);
         $manual_index = array_search($candidate->ID, $manual, true);
         $shared_tags = count(array_intersect($tags, $current_tags)); $shared_categories = count(array_intersect($categories, $current_categories));
@@ -455,7 +509,8 @@ function shiki_select_posts(string $context, array $exclude = [], int $limit = 3
         $scored[] = ['post' => $candidate, 'score' => $score];
     }
     usort($scored, static fn($a, $b) => ($b['score'] <=> $a['score']) ?: strcmp($b['post']->post_modified_gmt, $a['post']->post_modified_gmt) ?: strcmp($b['post']->post_date_gmt, $a['post']->post_date_gmt) ?: ($b['post']->ID <=> $a['post']->ID));
-    $posts = array_map(static fn($item) => $item['post'], array_slice($scored, 0, $limit));
+    $chosen = array_map(static fn($item) => (int) $item['post']->ID, array_slice($scored, 0, $limit));
+    $posts = $chosen ? shiki_public_posts(['post__in' => $chosen, 'orderby' => 'post__in', 'posts_per_page' => count($chosen), 'no_found_rows' => true])->posts : [];
     if (!shiki_is_season_preview()) {
         set_transient($cache_key, array_map(static fn($post) => $post->ID, $posts), 15 * MINUTE_IN_SECONDS);
         $keys = (array) get_option('shikipress_selection_keys', []);
@@ -513,7 +568,12 @@ add_action('shiki_daily_maintenance', function (): void {
     $lock = 'shiki_daily_lock'; $lock_token = shiki_acquire_job_lock($lock, 60); if (!$lock_token) { return; }
     if (get_option('shikipress_views_schema') === '1') {
         global $wpdb; $table = shiki_views_table(); $cutoff = (new DateTimeImmutable('now', shiki_timezone()))->modify('-90 days')->format('Y-m-d');
-        $wpdb->query($wpdb->prepare("DELETE FROM $table WHERE view_day < %s LIMIT 1000", $cutoff)); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+        // Batches keep each statement short; the time bound stays well inside the 60-second lock.
+        $started = microtime(true);
+        for ($batch = 0; $batch < 200; $batch++) {
+            $deleted = $wpdb->query($wpdb->prepare("DELETE FROM $table WHERE view_day < %s LIMIT 1000", $cutoff)); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+            if (!$deleted || $deleted < 1000 || microtime(true) - $started > 20) { break; }
+        }
     }
     delete_transient('shiki_popular_7'); delete_transient('shiki_popular_30'); shiki_release_job_lock($lock, $lock_token);
 });
@@ -521,15 +581,22 @@ add_action('shiki_season_tick', function (): void {
     $context = shiki_season_context(); $fingerprint = $context['season'] . ':' . ($context['event']['id'] ?? '') . ':' . (new DateTimeImmutable('now', shiki_timezone()))->format('Y-m-d');
     if (get_option('shikipress_season_fingerprint') !== $fingerprint) { update_option('shikipress_season_fingerprint', $fingerprint, false); shiki_invalidate_cache(); }
 });
+/** False while the Customizer only previews this theme; the active theme is another one. */
+function shiki_theme_is_really_active(): bool {
+    global $wp_customize;
+    return !($wp_customize instanceof WP_Customize_Manager) || $wp_customize->is_theme_active();
+}
 function shiki_schedule_automation(): void {
+    if (!shiki_theme_is_really_active()) { return; }
     if (!wp_next_scheduled('shiki_season_tick')) { wp_schedule_event(time() + 60, 'hourly', 'shiki_season_tick'); }
     if (!wp_next_scheduled('shiki_daily_maintenance')) { wp_schedule_event(time() + 120, 'daily', 'shiki_daily_maintenance'); }
     if (shiki_option('view_count_enabled')) { shiki_install_views_table(); }
 }
 add_action('init', 'shiki_schedule_automation');
-add_action('switch_theme', function (): void {
+add_action('switch_theme', function ($new_name = '', $new_theme = null): void {
+    if ($new_theme instanceof WP_Theme && 'shikipress' === $new_theme->get_template()) { return; }
     foreach (['shiki_season_tick', 'shiki_daily_maintenance', 'shiki_translate_job'] as $hook) { wp_unschedule_hook($hook); }
-});
+}, 10, 2);
 foreach (['trashed_post', 'untrashed_post', 'created_category'] as $hook) { add_action($hook, 'shiki_invalidate_cache', 99, 0); }
 add_action('shiki_cache_invalidated', function (): void {
     foreach ((array) get_option('shikipress_selection_keys', []) as $key) { delete_transient($key); }
@@ -549,15 +616,20 @@ add_action('admin_post_shiki_category_setup', function (): void {
 add_action('admin_post_shiki_delete_counts', function (): void {
     if (!current_user_can('manage_options')) { wp_die('操作権限がありません。', '', ['response' => 403]); }
     check_admin_referer('shiki_delete_counts'); global $wpdb; $table = shiki_views_table();
-    if (get_option('shikipress_views_schema') === '1') { $wpdb->query("TRUNCATE TABLE $table"); } // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- trusted table prefix.
-    shiki_invalidate_cache(); wp_safe_redirect(admin_url('admin.php?page=shikipress&tab=automation&counts_deleted=1')); exit;
+    $deleted = true;
+    if (get_option('shikipress_views_schema') === '1') {
+        $suppress = $wpdb->suppress_errors(true);
+        $deleted = false !== $wpdb->query("TRUNCATE TABLE $table") || false !== $wpdb->query("DELETE FROM $table"); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- trusted table prefix.
+        $wpdb->suppress_errors($suppress);
+    }
+    shiki_invalidate_cache(); wp_safe_redirect(admin_url('admin.php?page=shikipress&tab=automation&counts_deleted=' . ($deleted ? '1' : '0'))); exit;
 });
 add_action('shiki_admin_tab_automation', 'shiki_automation_admin');
 function shiki_automation_admin(): void {
     if (!current_user_can('manage_options')) { return; }
     $report_key = 'shiki_setup_report_' . get_current_user_id(); $report = get_transient($report_key);
     if (is_array($report) && $report) { echo '<div class="notice notice-info"><p>'; foreach ($report as $season => $message) { if (isset(shiki_seasons()[$season]) && is_string($message)) { echo esc_html(shiki_seasons()[$season] . '：' . $message) . '<br>'; } } echo '</p></div>'; delete_transient($report_key); }
-    if (isset($_GET['counts_deleted'])) { echo '<div class="notice notice-success inline"><p>保存済みの匿名集計を削除しました。</p></div>'; }
+    if (isset($_GET['counts_deleted'])) { echo '1' === $_GET['counts_deleted'] ? '<div class="notice notice-success inline"><p>保存済みの匿名集計を削除しました。</p></div>' : '<div class="notice notice-error inline"><p>匿名集計を削除できませんでした。データベースの権限を確認してください。</p></div>'; }
     echo '<h2>基本設定</h2><p>四季カテゴリーは、管理者がここで実行したときだけ作成します。現在の名前・スラッグを変更せず、衝突するカテゴリーは対応付けを選択します。</p><table class="widefat striped"><thead><tr><th>対象</th><th>実行予定</th></tr></thead><tbody>';
     $mapping = shiki_season_terms();
     foreach (shiki_seasons() as $season => $label) {

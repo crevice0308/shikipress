@@ -12,6 +12,8 @@ final class ShikiPress_Updater {
     const URI = 'https://github.com/crevice0308/shikipress';
     const API = 'https://api.github.com/repos/crevice0308/shikipress/releases/latest';
     const CACHE = 'shikipress_github_release_v1';
+    // The last verified release, kept longer than CACHE so that one failed check does not withdraw the offer.
+    const LAST = 'shikipress_github_release_last_v1';
     const MAX_PACKAGE = 10485760; // 10 MiB compressed; normal releases are much smaller.
     const MAX_EXPANDED = 31457280;
 
@@ -23,10 +25,15 @@ final class ShikiPress_Updater {
         }
         // Network-wide update transients can be consumed on a site where this
         // theme's verifier is not loaded. A theme-only updater cannot secure it.
-        if ( is_multisite() || 'shikipress' !== get_template() ) {
+        if ( is_multisite() || 'shikipress' !== get_template() ||
+            ( isset( $GLOBALS['wp_customize'] ) && $GLOBALS['wp_customize'] instanceof WP_Customize_Manager && ! $GLOBALS['wp_customize']->is_theme_active() ) ) {
             return false;
         }
         $release = self::release();
+        // A temporary GitHub failure keeps the last verified offer visible; installation always refetches.
+        if ( is_wp_error( $release ) ) {
+            $release = self::last_verified();
+        }
         $current = $theme_data['Version'] ?? '';
         if ( is_wp_error( $release ) || ! self::version( $current ) ) {
             return false;
@@ -270,12 +277,24 @@ final class ShikiPress_Updater {
         if ( is_wp_error( $data ) ) {
             set_site_transient( self::CACHE, array( 'error' => true ), 15 * MINUTE_IN_SECONDS );
         } else {
-            set_site_transient( self::CACHE, array(
+            $signed = array(
                 'data' => $data,
                 'mac' => hash_hmac( 'sha256', wp_json_encode( $data ), wp_salt( 'auth' ) ),
-            ), 6 * HOUR_IN_SECONDS );
+            );
+            set_site_transient( self::CACHE, $signed, 6 * HOUR_IN_SECONDS );
+            set_site_transient( self::LAST, $signed, 168 * HOUR_IN_SECONDS );
         }
         return $data;
+    }
+
+    /** The last release that passed every check, for display only; pre_download() never uses it. */
+    private static function last_verified() {
+        $cached = get_site_transient( self::LAST );
+        if ( is_array( $cached ) && self::valid_data( $cached['data'] ?? null ) && is_string( $cached['mac'] ?? null ) &&
+            hash_equals( hash_hmac( 'sha256', wp_json_encode( $cached['data'] ), wp_salt( 'auth' ) ), $cached['mac'] ) ) {
+            return $cached['data'];
+        }
+        return self::error();
     }
 
     private static function fetch_release() {
@@ -436,7 +455,7 @@ final class ShikiPress_Updater {
         $e = unpack( 'vdisk/vstart/vdisk_count/vcount/Vsize/Voffset/vcomment', substr( $zip, $end + 4, 18 ) );
         if ( 0 !== $e['disk'] || 0 !== $e['start'] || $e['disk_count'] !== $e['count'] ||
             $e['count'] < 1 || $e['count'] > 1500 || $e['offset'] + $e['size'] !== $end ||
-            $end + 22 + $e['comment'] !== strlen( $zip ) ) {
+            0 !== $e['comment'] || $end + 22 !== strlen( $zip ) ) {
             return self::error( 'archive' );
         }
         $position = $e['offset'];

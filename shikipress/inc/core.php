@@ -20,7 +20,7 @@ function shiki_option( $key, $default = null ) {
     // The settings screens only store validated values. A value of another shape (a damaged
     // option, or one written by other code) must never reach templates that expect the documented type.
     if ( isset( $defaults[ $key ] ) ) {
-        $mismatch = is_array( $defaults[ $key ] ) ? ! is_array( $value ) : ( null !== $value && ! is_scalar( $value ) );
+        $mismatch = is_array( $defaults[ $key ] ) ? ! is_array( $value ) : ! is_scalar( $value );
         if ( $mismatch ) { return $defaults[ $key ]; }
     }
     return $value;
@@ -64,6 +64,8 @@ add_action( 'after_switch_theme', 'shiki_activate' );
 
 // Replacing an active ZIP does not trigger after_switch_theme.
 add_action( 'init', static function () {
+    // A Customizer preview of this theme, while another theme is active, changes nothing.
+    if ( function_exists( 'shiki_theme_is_really_active' ) && ! shiki_theme_is_really_active() ) { return; }
     if ( get_option( 'shikipress_version' ) !== SHIKI_VERSION ) {
         update_option( 'shikipress_version', SHIKI_VERSION, false );
         shiki_invalidate_cache();
@@ -129,6 +131,7 @@ add_action( 'set_object_terms', static function ( $object_id = 0, $terms = array
 add_action( 'edited_term', 'shiki_invalidate_cache', 10, 0 );
 add_action( 'delete_term', 'shiki_invalidate_cache', 10, 0 );
 add_action( 'update_option_shikipress_settings', 'shiki_invalidate_cache', 10, 0 );
+add_action( 'add_option_shikipress_settings', 'shiki_invalidate_cache', 10, 0 );
 add_action( 'update_option_blog_public', 'shiki_invalidate_cache', 10, 0 );
 
 // REST and plugins may update these fields after save_post has already fired.
@@ -179,7 +182,13 @@ function shiki_public_posts( $args = array() ) {
 }
 
 function shiki_public_pages() {
-    $pages = get_posts( array( 'post_type' => 'page', 'post_status' => 'publish', 'has_password' => false, 'posts_per_page' => -1, 'orderby' => array( 'menu_order' => 'ASC', 'title' => 'ASC' ), 'suppress_filters' => false, 'exclude' => array_map( 'absint', (array) shiki_option( 'page_exclude', array() ) ), 'meta_query' => array( shiki_visibility_meta_query() ) ) );
+    // Templates, menus and panels ask for this list several times per request. Keep one result per cache
+    // generation and settings; any change to a published page or these settings starts a new generation.
+    static $memo = array();
+    $signature = (int) get_option( 'shikipress_cache_epoch', 1 ) . ':' . md5( wp_json_encode( array( shiki_option( 'page_exclude', array() ), shiki_option( 'page_priority', array() ) ) ) );
+    if ( isset( $memo[ $signature ] ) ) { return $memo[ $signature ]; }
+    if ( count( $memo ) > 20 ) { $memo = array(); }
+    $pages = get_posts( array( 'post_type' => 'page', 'post_status' => 'publish', 'has_password' => false, 'posts_per_page' => -1, 'orderby' => array( 'menu_order' => 'ASC', 'title' => 'ASC' ), 'suppress_filters' => false, 'exclude' => array_map( 'absint', (array) shiki_option( 'page_exclude', array() ) ), 'meta_query' => array( shiki_visibility_meta_query() ), 'update_post_meta_cache' => false, 'update_post_term_cache' => false ) );
     $priority = array_values( array_map( 'absint', (array) shiki_option( 'page_priority', array() ) ) );
     if ( $priority ) {
         $positions = array_flip( $priority );
@@ -188,11 +197,18 @@ function shiki_public_pages() {
             return $rank ?: ( $a->menu_order <=> $b->menu_order ) ?: strcmp( $a->post_title, $b->post_title );
         } );
     }
-    return $pages;
+    return $memo[ $signature ] = $pages;
 }
 
 function shiki_public_query_scope( $query ) {
-    if ( is_admin() || ! $query->is_main_query() || $query->is_singular() || ( defined( 'REST_REQUEST' ) && REST_REQUEST ) ) {
+    if ( is_admin() || ! $query->is_main_query() || ( defined( 'REST_REQUEST' ) && REST_REQUEST ) ) {
+        return;
+    }
+    if ( $query->is_singular() ) {
+        // /?p=ID&s=word answers 200 or 404 depending on whether the body contains the word. Core only
+        // excludes protected posts from such searches for visitors who are not logged in; nobody may test
+        // a protected body without its password.
+        if ( '' !== (string) $query->get( 's' ) ) { $query->set( 'has_password', false ); }
         return;
     }
     if ( $query->is_search() || $query->is_archive() || $query->is_home() || $query->is_feed() ) {
@@ -278,6 +294,16 @@ add_filter( 'rest_comment_query', static function( $args, $request ) {
     }
     return $args;
 }, 20, 2 );
+/**
+ * The Latest Comments block and the Recent Comments widget follow the same public scope as REST and the
+ * comment feed. The array status keeps their cached results apart from other queries with the same arguments.
+ */
+add_filter( 'widget_comments_args', static function( $args ) {
+    if ( ! is_array( $args ) ) { return $args; }
+    $args['shiki_public_scope'] = true;
+    $args['post_status'] = array( 'publish' );
+    return $args;
+}, 20 );
 /** Public media lists omit files attached to protected, excluded or hidden posts; unattached media stays as in core. */
 add_filter( 'rest_attachment_query', static function( $args ) {
     if ( ! current_user_can( 'upload_files' ) ) { $args['shiki_public_parent'] = true; }
@@ -297,17 +323,33 @@ function shiki_setting_sections() {
     return apply_filters( 'shiki_setting_sections', array( 'season_mode' => 'design', 'season_fixed' => 'design', 'timezone' => 'design', 'tabs' => 'navigation', 'page_roles' => 'navigation', 'page_exclude' => 'navigation', 'page_priority' => 'navigation', 'category_exclude' => 'navigation' ) );
 }
 
-function shiki_ids( $value ) {
-    if ( is_string( $value ) ) {
-        $value = preg_split( '/[\s,]+/', $value, -1, PREG_SPLIT_NO_EMPTY );
+/**
+ * The parts of an ID list as typed: ASCII or full-width digits, separated by spaces (including the
+ * ideographic space), commas or Japanese commas. An array is returned with its scalar items normalised.
+ */
+function shiki_id_list_parts( $value ) {
+    $digits = array( '０' => '0', '１' => '1', '２' => '2', '３' => '3', '４' => '4', '５' => '5', '６' => '6', '７' => '7', '８' => '8', '９' => '9' );
+    if ( is_array( $value ) ) {
+        return array_map( static function ( $item ) use ( $digits ) { return is_string( $item ) ? trim( strtr( $item, $digits ) ) : $item; }, array_filter( $value, 'is_scalar' ) );
     }
-    return array_values( array_unique( array_filter( array_map( 'absint', is_array( $value ) ? $value : array() ) ) ) );
+    if ( ! is_scalar( $value ) ) { return array(); }
+    $value = strtr( (string) $value, $digits );
+    $parts = preg_split( '/[\s,、，\x{3000}]+/u', $value, -1, PREG_SPLIT_NO_EMPTY );
+    // Invalid UTF-8 cannot be split as Unicode; keep the ASCII separators.
+    return is_array( $parts ) ? $parts : preg_split( '/[\s,]+/', $value, -1, PREG_SPLIT_NO_EMPTY );
+}
+
+function shiki_ids( $value ) {
+    return array_values( array_unique( array_filter( array_map( 'absint', shiki_id_list_parts( $value ) ) ) ) );
 }
 
 function shiki_validate_settings( $input, $section, $existing = null ) {
     $defaults = shiki_defaults();
     $current = is_array( $existing ) ? $existing : get_option( 'shikipress_settings', array() );
     $out = array_merge( $defaults, is_array( $current ) ? $current : array() );
+    foreach ( $defaults as $key => $default ) {
+        if ( null !== $default && ( is_array( $default ) ? ! is_array( $out[ $key ] ) : ! is_scalar( $out[ $key ] ) ) ) { $out[ $key ] = $default; }
+    }
     if ( ! is_array( $input ) ) { return $out; }
     $input = array_intersect_key( $input, $defaults );
     foreach ( $input as $key => $value ) {
@@ -332,9 +374,11 @@ function shiki_validate_settings( $input, $section, $existing = null ) {
 
 function shiki_sanitize_settings( $input ) {
     if ( ! current_user_can( 'manage_options' ) ) { return get_option( 'shikipress_settings', array() ); }
-    $option_page = $_POST['option_page'] ?? null;
+    // wp-admin/options.php reads option_page from $_REQUEST, which includes the query string.
+    $option_page = $_REQUEST['option_page'] ?? ( $_POST['option_page'] ?? null );
+    $options_screen = 'options.php' === ( $GLOBALS['pagenow'] ?? '' ) || ( is_admin() && isset( $_SERVER['SCRIPT_NAME'] ) && is_string( $_SERVER['SCRIPT_NAME'] ) && 'options.php' === basename( $_SERVER['SCRIPT_NAME'] ) );
     // Another settings group (such as the generic options.php screen) never writes this option.
-    if ( null !== $option_page && 'shikipress' !== $option_page ) { return get_option( 'shikipress_settings', array() ); }
+    if ( ( null !== $option_page && 'shikipress' !== $option_page ) || ( null === $option_page && $options_screen ) ) { return get_option( 'shikipress_settings', array() ); }
     // Registered sanitizers also run for internal update_option calls. Each such
     // action validates its own nonce and payload before reaching this boundary.
     if ( null === $option_page ) {
@@ -348,7 +392,10 @@ function shiki_sanitize_settings( $input ) {
 }
 
 function shiki_register_settings() {
-    register_setting( 'shikipress', 'shikipress_settings', array( 'type' => 'array', 'sanitize_callback' => 'shiki_sanitize_settings', 'show_in_rest' => false, 'default' => shiki_defaults() ) );
+    // No registered default: with one, update_option() hands a value equal to the defaults to add_option(),
+    // which sanitizes a second time, turns autoload on and fires no update_option_shikipress_settings.
+    // Every reader passes its own default to get_option().
+    register_setting( 'shikipress', 'shikipress_settings', array( 'type' => 'array', 'sanitize_callback' => 'shiki_sanitize_settings', 'show_in_rest' => false ) );
 }
 add_action( 'admin_init', 'shiki_register_settings' );
 
@@ -443,7 +490,7 @@ function shiki_navigation_screen() {
     $roles = (array) shiki_option( 'page_roles', array() );
     foreach ( array( 'privacy' => 'プライバシーポリシー', 'contact' => 'お問い合わせ', 'operator' => '運営者情報', 'about' => 'このサイトについて', 'disclaimer' => '免責事項', 'sitemap' => 'サイトマップ' ) as $role => $label ) {
         echo '<p><label>' . esc_html( $label ) . '<br>';
-        wp_dropdown_pages( array( 'name' => 'shikipress_settings[page_roles][' . $role . ']', 'selected' => absint( $roles[ $role ] ?? 0 ), 'show_option_none' => '未設定', 'option_none_value' => 0, 'post_status' => array( 'publish', 'draft', 'private', 'pending' ), 'echo' => true ) );
+        wp_dropdown_pages( array( 'name' => 'shikipress_settings[page_roles][' . $role . ']', 'selected' => absint( $roles[ $role ] ?? 0 ), 'show_option_none' => '未設定', 'option_none_value' => 0, 'post_status' => array( 'publish', 'future', 'draft', 'private', 'pending' ), 'hierarchical' => 0, 'echo' => true ) );
         echo '</label></p>';
     }
     echo '</div><details class="shiki-admin-card"><summary>詳細設定：表示順と除外</summary><p>ページIDは固定ページ編集URLのpost=の値です。カンマ区切りで入力します。</p>';

@@ -12,7 +12,8 @@ import sys
 import time
 
 root = Path(__file__).resolve().parent.parent
-state = Path(os.environ.get("SHIKI_DEV_STATE", str(Path.home() / ".local/state/shikipress-dev"))).resolve()
+# Same default as scripts/dev-common.sh, including XDG_STATE_HOME.
+state = Path(os.environ.get("SHIKI_DEV_STATE") or str(Path(os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")) / "shikipress-dev")).resolve()
 state.mkdir(mode=0o700, parents=True, exist_ok=True)
 queue = state / "jobs"
 queue.mkdir(mode=0o700, exist_ok=True)
