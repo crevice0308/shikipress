@@ -15,9 +15,30 @@
     status.textContent = data.message || data.source || '';
     if (data.slug) candidate.value = data.slug;
   };
+  // "Apply on save" choices apply once. Checking a box again issues a new token for the next save, and the
+  // block editor (which keeps this form after sending it with a save) clears the boxes once they were sent.
+  const token = document.getElementById('shiki-apply-token');
+  const applyBoxes = () => Array.from(document.querySelectorAll('input[name="shiki_apply_classification"], input[name="shiki_apply_slug"]'));
+  const renew = () => { if (token && window.crypto?.getRandomValues) token.value = Array.from(window.crypto.getRandomValues(new Uint8Array(10)), (byte) => byte.toString(16).padStart(2, '0')).join(''); };
+  applyBoxes().forEach((box) => box.addEventListener('change', () => { if (box.checked) renew(); }));
+  if (window.wp?.data?.subscribe && window.wp.data.select) {
+    let sending = false;
+    window.wp.data.subscribe(() => {
+      const now = Boolean(window.wp.data.select('core/edit-post')?.isSavingMetaBoxes?.());
+      if (sending && !now) applyBoxes().forEach((box) => { box.checked = false; });
+      sending = now;
+    });
+  }
+  // Suggestions follow the title being edited, not only the saved one.
+  const currentTitle = () => {
+    const field = document.getElementById('title');
+    if (field) return field.value;
+    try { return window.wp?.data?.select('core/editor')?.getEditedPostAttribute('title'); } catch (_) { return undefined; }
+  };
   document.querySelectorAll('.shiki-regenerate').forEach(button => button.addEventListener('click', async () => {
     button.disabled = true;
-    try { show(await send('shiki_slug_suggest', button.dataset.post)); }
+    const title = currentTitle();
+    try { show(await send('shiki_slug_suggest', button.dataset.post, typeof title === 'string' ? {title} : {})); }
     catch (error) { status.textContent = error.message; }
     finally { button.disabled = false; }
   }));

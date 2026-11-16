@@ -10,6 +10,7 @@ file_put_contents( ABSPATH . 'wp-admin/includes/file.php', '<?php' );
 define( 'MINUTE_IN_SECONDS', 60 ); define( 'HOUR_IN_SECONDS', 3600 ); define( 'WPINC', 'wp-includes' );
 class WP_Error { public $code; public function __construct( $code, $message = '' ) { $this->code = $code; } }
 class Theme_Upgrader {}
+class WP_Customize_Manager { public function is_theme_active() { return false; } }
 // Explicit parser shim for focused tests. Native integration uses the real core parser.
 class WP_HTML_Tag_Processor {
     private $html; private $cursor = 0; private $start; private $tag;
@@ -138,6 +139,10 @@ foreach ( glob( SHIKI_TEST_FIXTURES . '/*.zip' ) as $file ) {
     $name = basename( $file, '.zip' ); $data = seed( $name ); $result = ShikiPress_Updater::validate_archive( $file, $data );
     check( str_starts_with( $name, 'valid' ) ? true === $result : is_wp_error( $result ), 'archive fixture ' . $name );
 }
+// While the Customizer previews this theme, another theme is active.
+seed(); $GLOBALS['wp_customize'] = new WP_Customize_Manager();
+check( false === ShikiPress_Updater::filter_update( false, array( 'Version' => '1.1.0', 'UpdateURI' => ShikiPress_Updater::URI ), 'shikipress', array() ) && 0 === count( $GLOBALS['calls'] ), 'a Customizer preview never advertises an offer' );
+unset( $GLOBALS['wp_customize'] );
 $data = seed(); $GLOBALS['multisite'] = true;
 check( false === ShikiPress_Updater::filter_update( array( 'package' => 'old' ), array( 'Version' => '1.1.0', 'UpdateURI' => ShikiPress_Updater::URI ), 'shikipress', array() ) && 0 === count( $GLOBALS['calls'] ), 'multisite never advertises a theme-only update' );
 check( is_wp_error( ShikiPress_Updater::pre_download( false, $data['package'], new Theme_Upgrader(), $normal ) ) && 0 === count( $GLOBALS['calls'] ), 'multisite native update fails closed without HTTP' );

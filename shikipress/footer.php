@@ -15,7 +15,7 @@ $shiki_tabs = array_merge(['home' => 'ホーム', 'categories' => 'カテゴリ�
             echo '</ul>';
         }
         if (has_nav_menu('footer')) { wp_nav_menu(['theme_location' => 'footer', 'container' => false, 'menu_class' => 'footer-menu', 'depth' => 1, 'fallback_cb' => false]); }
-        ?><a class="text-link" href="#nav-pages" data-panel="nav-pages" aria-controls="nav-pages" aria-expanded="false">固定ページ一覧 <?php echo shiki_icon('arrow'); ?></a></div></div>
+        ?><a class="text-link" href="#nav-pages" data-panel="nav-pages" aria-controls="nav-pages">固定ページ一覧 <?php echo shiki_icon('arrow'); ?></a></div></div>
     <div class="footer-bottom wrap"><small>&copy; <?php echo esc_html(wp_date('Y')); ?> <?php bloginfo('name'); ?></small><span class="footer-motto">四季を、ていねいに。</span><a href="#page-top" class="back-top">ページ上部へ <?php echo shiki_icon('up'); ?></a></div>
 </footer>
 <div class="navigation-panels wrap">
@@ -26,9 +26,9 @@ $shiki_tabs = array_merge(['home' => 'ホーム', 'categories' => 'カテゴリ�
 <div class="panel-backdrop" hidden></div>
 <nav class="mobile-tabs" aria-label="スマホ下部ナビゲーション" data-modal-inert>
     <a href="<?php echo esc_url(home_url('/')); ?>" <?php if (is_front_page()) { echo 'aria-current="page"'; } ?>><?php echo shiki_icon('home'); ?><span><?php echo esc_html($shiki_tabs['home']); ?></span></a>
-    <a href="#nav-categories" data-panel="nav-categories" aria-controls="nav-categories" aria-expanded="false"><?php echo shiki_icon('grid'); ?><span><?php echo esc_html($shiki_tabs['categories']); ?></span></a>
-    <a href="#nav-pages" data-panel="nav-pages" aria-controls="nav-pages" aria-expanded="false"><?php echo shiki_icon('pages'); ?><span><?php echo esc_html($shiki_tabs['pages']); ?></span></a>
-    <a href="#nav-search" data-panel="nav-search" aria-controls="nav-search" aria-expanded="false"><?php echo shiki_icon('search'); ?><span><?php echo esc_html($shiki_tabs['search']); ?></span></a>
+    <a href="#nav-categories" data-panel="nav-categories" aria-controls="nav-categories"><?php echo shiki_icon('grid'); ?><span><?php echo esc_html($shiki_tabs['categories']); ?></span></a>
+    <a href="#nav-pages" data-panel="nav-pages" aria-controls="nav-pages"><?php echo shiki_icon('pages'); ?><span><?php echo esc_html($shiki_tabs['pages']); ?></span></a>
+    <a href="#nav-search" data-panel="nav-search" aria-controls="nav-search"><?php echo shiki_icon('search'); ?><span><?php echo esc_html($shiki_tabs['search']); ?></span></a>
 </nav>
 <div class="screen-reader-text" role="status" aria-live="polite" id="shiki-status"></div>
 <?php wp_footer(); ?>

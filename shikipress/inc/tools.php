@@ -165,7 +165,7 @@ function shiki_link_internal_status( $url ) {
 	}
 	if ( preg_match( '~^(?:author/|\d{4}(?:/|$)|page/\d+)~', $relative ) ) { return 'unresolved'; }
 	$uploads = wp_upload_dir( null, false );
-	$upload_path = rawurldecode( wp_parse_url( $uploads['baseurl'], PHP_URL_PATH ) );
+	$upload_path = rawurldecode( (string) wp_parse_url( $uploads['baseurl'], PHP_URL_PATH ) );
 	if ( $upload_path && 0 === strpos( $path, trailingslashit( $upload_path ) ) ) {
 		$file = $uploads['basedir'] . '/' . substr( $path, strlen( trailingslashit( $upload_path ) ) );
 		return is_file( $file ) ? 'ok' : 'missing';
@@ -176,9 +176,19 @@ function shiki_link_internal_status( $url ) {
 	return 'unresolved';
 }
 function shiki_links_scan_batch( $reset = false ) {
-	$state = $reset ? array( 'offset' => 0, 'complete' => false, 'results' => array(), 'queue' => array(), 'dropped' => 0 ) : shiki_links_state();
-	$posts = get_posts( array( 'post_type' => array( 'post', 'page' ), 'post_status' => 'publish', 'has_password' => false, 'posts_per_page' => 40, 'offset' => $state['offset'], 'orderby' => 'ID', 'order' => 'ASC', 'suppress_filters' => false ) );
+	$state = $reset ? array( 'offset' => 0, 'last_id' => 0, 'complete' => false, 'results' => array(), 'queue' => array(), 'dropped' => 0 ) : shiki_links_state();
+	$args = array( 'post_type' => array( 'post', 'page' ), 'post_status' => 'publish', 'has_password' => false, 'posts_per_page' => 40, 'orderby' => 'ID', 'order' => 'ASC', 'suppress_filters' => false );
+	// Continue after the last checked ID: an offset shifts when posts are published or removed between
+	// batches, which skipped posts and still reported a complete round. A state saved before 1.1.9 has no ID yet.
+	$after = isset( $state['last_id'] ) && is_numeric( $state['last_id'] ) ? max( 0, (int) $state['last_id'] ) : null;
+	if ( null === $after ) { $args['offset'] = max( 0, (int) $state['offset'] ); }
+	$args['shiki_link_after'] = $after;
+	$where = static function ( $sql, $query ) use ( $after ) { global $wpdb; return $query instanceof WP_Query && $after === $query->get( 'shiki_link_after' ) ? $sql . $wpdb->prepare( " AND {$wpdb->posts}.ID > %d", $after ) : $sql; };
+	if ( null !== $after ) { add_filter( 'posts_where', $where, PHP_INT_MAX, 2 ); }
+	try { $posts = get_posts( $args ); } finally { remove_filter( 'posts_where', $where, PHP_INT_MAX ); }
+	$checked = 0; $budget_start = microtime( true ); $last_done = null; $stopped = false;
 	foreach ( $posts as $post ) {
+		if ( $checked >= 2000 || microtime( true ) - $budget_start > 20 ) { $stopped = true; break; }
 		$processor = new WP_HTML_Tag_Processor( $post->post_content ); $seen = array(); $link_count = 0;
 		while ( $processor->next_tag( array( 'tag_name' => 'A' ) ) && $link_count < 500 ) {
 			$href = $processor->get_attribute( 'href' ); if ( ! is_string( $href ) ) { continue; }
@@ -193,8 +203,11 @@ function shiki_links_scan_batch( $reset = false ) {
 				else { ++$state['dropped']; }
 			} elseif ( 'ok' !== $status && count( $state['results'] ) < 1000 ) { $state['results'][] = array( 'url' => $url, 'sources' => array( $post->ID ), 'status' => $status ); }
 		}
+		$checked += $link_count; $last_done = $post;
 	}
-	$state['offset'] += count( $posts ); $state['complete'] = count( $posts ) < 40;
+	if ( $stopped ) { $posts = $last_done ? array_slice( $posts, 0, array_search( $last_done, $posts, true ) + 1 ) : array(); }
+	$state['offset'] = (int) $state['offset'] + count( $posts ); $state['complete'] = ! $stopped && count( $posts ) < 40;
+	if ( $posts ) { $state['last_id'] = (int) end( $posts )->ID; } elseif ( null !== $after ) { $state['last_id'] = $after; }
 	update_option( 'shikipress_link_state', $state, false );
 	return $state;
 }
@@ -242,13 +255,16 @@ function shiki_link_safe_target( $url ) {
 	}
 	if ( ! $ips ) { return new WP_Error( 'dns', 'DNSを確認できませんでした。リンク切れとは断定しません。' ); }
 	foreach ( $ips as $ip ) { if ( ! is_string( $ip ) || ! shiki_link_public_ip( $ip ) ) { return new WP_Error( 'unsafe', 'プライベート・予約済み・メタデータ等のアドレスを拒否しました。' ); } }
-	return array( 'url' => $url, 'host' => $host, 'port' => $port, 'ips' => array_values( array_unique( $ips ) ) );
+	// WP_Http lower-cases the scheme before the cURL hooks run; use that form from here on.
+	$normalized = strtolower( $parts['scheme'] ) . '://' . ( false !== strpos( $host, ':' ) ? '[' . $host . ']' : $host ) . ( isset( $parts['port'] ) ? ':' . (int) $parts['port'] : '' ) . ( $parts['path'] ?? '' ) . ( isset( $parts['query'] ) ? '?' . $parts['query'] : '' );
+	return array( 'url' => $normalized, 'host' => $host, 'port' => $port, 'ips' => array_values( array_unique( $ips ) ) );
 }
 /** Validate every hop and pin cURL DNS to the previously checked public IP. */
 function shiki_link_fetch( $url ) {
 	for ( $hop = 0; $hop <= 2; ++$hop ) {
 		$target = shiki_link_safe_target( $url );
 		if ( is_wp_error( $target ) ) { return array( 'status' => 'unsafe' === $target->get_error_code() ? 'unsafe' : 'uncertain', 'detail' => $target->get_error_message() ); }
+		$url = $target['url'];
 		// The pinned cURL transport must be usable (curl_exec may be disabled while curl_init exists); never fall back to an unpinned transport.
 		$curl_ready = class_exists( '\WpOrg\Requests\Transport\Curl' ) && \WpOrg\Requests\Transport\Curl::test( array( \WpOrg\Requests\Capability::SSL => 'https' === strtolower( (string) wp_parse_url( $url, PHP_URL_SCHEME ) ) ) );
 		if ( ! $curl_ready || ! defined( 'CURLOPT_RESOLVE' ) ) { return array( 'status' => 'uncertain', 'detail' => 'DNS固定に必要なcURLが未導入のためHTTP取得を見送りました。' ); }
@@ -256,8 +272,18 @@ function shiki_link_fetch( $url ) {
 		$force_transport = static function ( &$request_url, &$headers, &$data, &$type, &$options ) use ( $target ) {
 			if ( is_string( $request_url ) && strtolower( trim( (string) wp_parse_url( $request_url, PHP_URL_HOST ), '[]' ) ) === $target['host'] ) { $options['transport'] = 'WpOrg\\Requests\\Transport\\Curl'; }
 		};
-		$pin = static function ( $handle, $args, $request_url ) use ( $url, $target ) {
-			if ( $request_url !== $url ) { return; }
+		$refused = false;
+		$pin = static function ( $handle, $args, $request_url ) use ( $target, &$refused ) {
+			$parts = wp_parse_url( (string) $request_url );
+			$host = strtolower( trim( (string) ( $parts['host'] ?? '' ), '[]' ) );
+			$port = isset( $parts['port'] ) ? (int) $parts['port'] : ( 'https' === strtolower( (string) ( $parts['scheme'] ?? '' ) ) ? 443 : 80 );
+			if ( $host !== $target['host'] || $port !== $target['port'] ) {
+				// Never send a request that cannot be pinned to the checked address.
+				if ( defined( 'CURLOPT_PROTOCOLS' ) ) { curl_setopt( $handle, CURLOPT_PROTOCOLS, 0 ); }
+				curl_setopt( $handle, CURLOPT_TIMEOUT_MS, 1 );
+				$refused = true;
+				return;
+			}
 			$ip = $target['ips'][0]; $resolve_ip = false !== strpos( $ip, ':' ) ? '[' . $ip . ']' : $ip;
 			curl_setopt( $handle, CURLOPT_RESOLVE, array( $target['host'] . ':' . $target['port'] . ':' . $resolve_ip ) );
 			curl_setopt( $handle, CURLOPT_PROXY, '' );
@@ -271,6 +297,7 @@ function shiki_link_fetch( $url ) {
 		} finally {
 			remove_action( 'requests-requests.before_request', $force_transport, PHP_INT_MAX ); remove_action( 'http_api_curl', $pin, PHP_INT_MAX );
 		}
+		if ( $refused ) { return array( 'status' => 'unsafe', 'detail' => '接続先を検査済みのアドレスに固定できないため送信しませんでした。' ); }
 		if ( is_wp_error( $response ) ) { return array( 'status' => 'uncertain', 'detail' => '取得失敗・タイムアウト等。リンク切れとは断定しません。' ); }
 		$code = wp_remote_retrieve_response_code( $response );
 		if ( in_array( $code, array( 301, 302, 303, 307, 308 ), true ) ) {
@@ -303,13 +330,18 @@ function shiki_links_run_queue() {
 	try {
 		if ( (int) get_option( 'shikipress_link_last_run', 0 ) > $now - 60 ) { return new WP_Error( 'rate', '60秒以上空けて実行してください。' ); }
 		update_option( 'shikipress_link_last_run', $now, false );
-		$state = shiki_links_state(); $count = 0;
+		$state = shiki_links_state(); $count = 0; $started = microtime( true );
 		foreach ( $state['queue'] as &$item ) {
-			if ( $count >= 2 ) { break; }
+			// Name resolution has no timeout of its own; never start another check late in the 90-second lock.
+			if ( $count >= 2 || microtime( true ) - $started > 30 ) { break; }
 			if ( ! in_array( $item['status'], array( 'queued', 'uncertain' ), true ) || $item['attempts'] >= 2 || $item['next'] > $now ) { continue; }
 			++$count; ++$item['attempts']; $item = array_merge( $item, shiki_link_fetch( $item['url'] ) ); $item['next'] = time() + 300;
 		}
-		unset( $item ); update_option( 'shikipress_link_state', $state, false );
+		unset( $item );
+		// If the lock expired and was taken over meanwhile, the newer state of the other run is kept.
+		$owner = (array) get_option( 'shikipress_link_lock', array() );
+		if ( ( $owner['token'] ?? null ) !== $token ) { return new WP_Error( 'locked', '検査の途中で他の検査が始まったため、結果を保存しませんでした。' ); }
+		update_option( 'shikipress_link_state', $state, false );
 		return $state;
 	} finally { shiki_links_release_lock( $token ); }
 }
@@ -442,7 +474,7 @@ function shiki_tools_action_apply() {
 	$shown_hash = isset( $_POST['preview_hash'] ) ? sanitize_text_field( wp_unslash( $_POST['preview_hash'] ) ) : '';
 	if ( ! hash_equals( shiki_backup_preview_hash( $data ), $shown_hash ) ) { wp_die( '別のタブでプレビューが更新されました。現在のプレビューを確認してください。', '', array( 'response' => 409 ) ); }
 	// Revalidate at application time, including changes of user privileges or theme schema.
-	$data = shiki_backup_parse( wp_json_encode( $data ) );
+	$data = shiki_backup_parse( wp_json_encode( $data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES ) );
 	if ( is_wp_error( $data ) ) { wp_die( esc_html( $data->get_error_message() ), '', array( 'response' => 400 ) ); }
 	$sections = isset( $_POST['sections'] ) && is_array( $_POST['sections'] ) ? array_map( 'sanitize_key', wp_unslash( $_POST['sections'] ) ) : array();
 	$result = shiki_backup_apply_data( $data, $sections );

@@ -53,9 +53,32 @@ function shiki_seo_is_public_post($post, $indexable = false) {
     if ('post' === $post->post_type && $hidden_categories && has_category($hidden_categories, $post)) { return false; }
     return !$indexable || '1' !== (string) get_post_meta($post->ID, '_shiki_noindex', true);
 }
+/** The page assigned as the posts page while its list is shown (core reports is_home(), not is_singular()). */
+function shiki_seo_posts_page_id(): int {
+    if (!is_home() || is_front_page() || 'page' !== get_option('show_on_front')) { return 0; }
+    $id = (int) get_option('page_for_posts');
+    return $id && 'page' === get_post_type($id) ? $id : 0;
+}
+/**
+ * The posts list is shown whatever the status or password of the page assigned to it; only the page's
+ * explicit choices (noindex, excluded) apply to the list.
+ */
+function shiki_seo_posts_page_indexable(int $id): bool {
+    return '1' !== (string) get_post_meta($id, '_shiki_noindex', true) && '1' !== (string) get_post_meta($id, '_shiki_exclude', true);
+}
+/** ?m=YYYYMMDD date archives leave year, monthnum and day empty; core's date links would fill them with today. */
+function shiki_seo_date_parts(): array {
+    $m = preg_replace('/\D/', '', (string) get_query_var('m'));
+    if ('' !== $m) {
+        return [(int) substr($m, 0, 4), strlen($m) > 5 ? (int) substr($m, 4, 2) : 0, strlen($m) > 7 ? (int) substr($m, 6, 2) : 0];
+    }
+    return [(int) get_query_var('year'), (int) get_query_var('monthnum'), (int) get_query_var('day')];
+}
 function shiki_seo_noindex() {
     if ('1' !== (string) get_option('blog_public') || is_search() || is_404() || is_preview() || is_attachment()) { return true; }
     if (is_singular() && !shiki_seo_is_public_post(get_queried_object_id(), true)) { return true; }
+    $posts_page = shiki_seo_posts_page_id();
+    if ($posts_page && !shiki_seo_posts_page_indexable($posts_page)) { return true; }
     if ((is_category() || is_tag() || is_tax()) && '1' === (string) get_term_meta(get_queried_object_id(), '_shiki_noindex', true)) { return true; }
     if (is_category() && in_array((int) get_queried_object_id(), array_map('absint', (array) shiki_option('category_exclude', [])), true)) { return true; }
     return (is_tag() && shiki_option('seo_noindex_tags')) || (is_author() && shiki_option('seo_noindex_authors')) || (is_date() && shiki_option('seo_noindex_dates'));
@@ -86,7 +109,7 @@ function shiki_seo_canonical() {
         if (!$url) { return ''; }
         // Each reader-sitemap slice is a distinct page and keeps its own canonical.
         if (has_shortcode((string) get_post_field('post_content', get_queried_object_id()), 'shiki_sitemap') || has_shortcode((string) get_post_field('post_content', get_queried_object_id()), 'shiki_html_sitemap')) {
-            foreach (['shiki_map_posts','shiki_map_pages'] as $key) { if (isset($_GET[$key]) && absint($_GET[$key]) > 1) { $url = add_query_arg($key, absint($_GET[$key]), $url); } }
+            foreach (['post' => 'shiki_map_posts', 'page' => 'shiki_map_pages'] as $type => $key) { $slice = shiki_html_sitemap_page($type); if ($slice > 1) { $url = add_query_arg($key, $slice, $url); } }
         }
         return $url;
     }
@@ -95,9 +118,13 @@ function shiki_seo_canonical() {
     elseif (is_search()) { $base = get_search_link(get_search_query(false)); }
     elseif (is_category() || is_tag() || is_tax()) { $base = get_term_link(get_queried_object()); }
     elseif (is_author()) { $base = get_author_posts_url(get_queried_object_id()); }
-    elseif (is_day()) { $base = get_day_link((int) get_query_var('year'), (int) get_query_var('monthnum'), (int) get_query_var('day')); }
-    elseif (is_month()) { $base = get_month_link((int) get_query_var('year'), (int) get_query_var('monthnum')); }
-    elseif (is_year()) { $base = get_year_link((int) get_query_var('year')); }
+    elseif (is_date()) {
+        // Never let core substitute the current date for a missing part.
+        [$year, $month, $day] = shiki_seo_date_parts();
+        if (is_day()) { $base = $year && $month && $day ? get_day_link($year, $month, $day) : ''; }
+        elseif (is_month()) { $base = $year && $month ? get_month_link($year, $month) : ''; }
+        elseif (is_year()) { $base = $year ? get_year_link($year) : ''; }
+    }
     elseif (is_post_type_archive()) { $base = get_post_type_archive_link(get_query_var('post_type')); }
     if (is_wp_error($base) || !$base) { return ''; }
     return shiki_seo_paged_url($base, max(1, (int) get_query_var('paged')));
@@ -107,7 +134,10 @@ add_filter('pre_get_document_title', function ($title) {
     $custom = '';
     if (get_query_var('shiki_stories')) { $custom = __('記事一覧', 'shikipress'); }
     if (is_singular() && shiki_seo_is_public_post(get_queried_object_id())) { $custom = get_post_meta(get_queried_object_id(), '_shiki_seo_title', true); }
-    if (is_category() || is_tag() || is_tax()) { $custom = get_term_meta(get_queried_object_id(), '_shiki_seo_title', true); }
+    $posts_page = shiki_seo_posts_page_id();
+    if ($posts_page && '' === (string) get_post_field('post_password', $posts_page)) { $custom = get_post_meta($posts_page, '_shiki_seo_title', true); }
+    // A search limited to a category or tag is a search page, not that term's archive.
+    if (!is_search() && (is_category() || is_tag() || is_tax())) { $custom = get_term_meta(get_queried_object_id(), '_shiki_seo_title', true); }
     if (is_front_page() && shiki_option('seo_home_title')) { $custom = shiki_option('seo_home_title'); }
     if (!$custom) { return ''; }
     $page = max((int) get_query_var('paged'), (int) get_query_var('page'), 1);
@@ -126,9 +156,17 @@ function shiki_seo_description() {
             // Do not expand dynamic blocks or shortcodes into metadata.
             $content = preg_split('/<!--nextpage-->/', $content);
             $page = max(1, (int) get_query_var('page'));
-            $description = shiki_seo_text($content[$page - 1] ?? $content[0]);
+            $segment = $content[$page - 1] ?? $content[0];
+            // An automatic description follows the automatic excerpt: hidden and non-text blocks stay out.
+            if (!$post->post_excerpt && function_exists('shiki_excerpt_source')) { $segment = shiki_excerpt_source($segment); }
+            $description = shiki_seo_text($segment);
             if ($description) { return $description; }
         }
+    }
+    $posts_page = shiki_seo_posts_page_id();
+    if ($posts_page && '' === (string) get_post_field('post_password', $posts_page)) {
+        $custom = get_post_meta($posts_page, '_shiki_seo_description', true);
+        if ($custom) { return shiki_seo_text($custom); }
     }
     if (is_category() || is_tag() || is_tax()) {
         $custom = get_term_meta(get_queried_object_id(), '_shiki_seo_description', true);
@@ -141,9 +179,10 @@ function shiki_seo_description() {
 /** Individual image > featured image > included 1200x630 seasonal PNG. */
 function shiki_seo_image() {
     $id = 0;
-    if (is_singular() && shiki_seo_is_public_post(get_queried_object_id())) {
-        $id = absint(get_post_meta(get_queried_object_id(), '_shiki_og_image', true));
-        if (!$id || !wp_attachment_is_image($id)) { $id = get_post_thumbnail_id(get_queried_object_id()); }
+    $subject = is_singular() ? get_queried_object_id() : shiki_seo_posts_page_id();
+    if ($subject && (is_singular() ? shiki_seo_is_public_post($subject) : '' === (string) get_post_field('post_password', $subject))) {
+        $id = absint(get_post_meta($subject, '_shiki_og_image', true));
+        if (!$id || !wp_attachment_is_image($id)) { $id = get_post_thumbnail_id($subject); }
     }
     if ($id) {
         $src = wp_get_attachment_image_src($id, 'full');
@@ -166,7 +205,9 @@ function shiki_seo_head() {
     echo "\n<!-- ShikiPress metadata -->\n";
     if ($description) { echo '<meta name="description" content="' . esc_attr($description) . '">' . "\n"; }
     if ($canonical) { echo '<link rel="canonical" href="' . esc_url($canonical) . '">' . "\n"; }
-    foreach (['og:locale'=>get_locale(), 'og:type'=>$article ? 'article' : 'website', 'og:site_name'=>get_bloginfo('name'), 'og:title'=>$title, 'og:description'=>$description, 'og:url'=>$canonical, 'og:image'=>$image['url'], 'og:image:width'=>$image['width'], 'og:image:height'=>$image['height'], 'og:image:alt'=>$image['alt']] as $key=>$value) {
+    $locale = (string) get_locale();
+    $locale = preg_match('/^([a-z]{2,3})_([A-Z]{2})(?:_|$)/', $locale, $parts) ? $parts[1] . '_' . $parts[2] : (['ja' => 'ja_JP', 'fi' => 'fi_FI', 'th' => 'th_TH', 'vi' => 'vi_VN', 'el' => 'el_GR', 'hr' => 'hr_HR', 'et' => 'et_EE', 'lv' => 'lv_LV', 'ca' => 'ca_ES', 'eu' => 'eu_ES', 'gl' => 'gl_ES', 'cy' => 'cy_GB', 'af' => 'af_ZA', 'sq' => 'sq_AL', 'hy' => 'hy_AM', 'az' => 'az_AZ', 'kk' => 'kk_KZ', 'km' => 'km_KH', 'lo' => 'lo_LA', 'uz' => 'uz_UZ'][$locale] ?? '');
+    foreach (['og:locale'=>$locale, 'og:type'=>$article ? 'article' : 'website', 'og:site_name'=>get_bloginfo('name'), 'og:title'=>$title, 'og:description'=>$description, 'og:url'=>$canonical, 'og:image'=>$image['url'], 'og:image:width'=>$image['width'], 'og:image:height'=>$image['height'], 'og:image:alt'=>$image['alt']] as $key=>$value) {
         if ('' !== (string) $value) { echo '<meta property="' . esc_attr($key) . '" content="' . esc_attr($value) . '">' . "\n"; }
     }
     foreach (['twitter:card'=>'summary_large_image','twitter:title'=>$title,'twitter:description'=>$description,'twitter:image'=>$image['url'],'twitter:image:alt'=>$image['alt']] as $key=>$value) {
@@ -215,7 +256,8 @@ function shiki_breadcrumb_items() {
             }
         }
         $items[] = ['name'=>get_the_title(get_queried_object_id()), 'url'=>shiki_seo_canonical()];
-    } elseif ((is_category() || is_tag() || is_tax()) && !(get_queried_object() instanceof WP_Term)) {
+    } elseif (is_search()) { $items[] = ['name'=>sprintf(__('「%s」の検索結果', 'shikipress'), get_search_query(false)), 'url'=>shiki_seo_canonical()]; }
+    elseif ((is_category() || is_tag() || is_tax()) && !(get_queried_object() instanceof WP_Term)) {
         // Unresolvable term combinations (e.g. a search limited to a missing category) have no term to describe.
         $items[] = ['name'=>is_search() ? sprintf(__('「%s」の検索結果', 'shikipress'), get_search_query(false)) : wp_strip_all_tags(get_the_archive_title()), 'url'=>shiki_seo_canonical()];
     } elseif (is_category() || is_tag() || is_tax()) {
@@ -227,8 +269,7 @@ function shiki_breadcrumb_items() {
             if (!is_wp_error($link)) { $items[] = ['name'=>$p->name,'url'=>$link]; }
         }
         $items[] = ['name'=>$term->name,'url'=>shiki_seo_canonical()];
-    } elseif (is_search()) { $items[] = ['name'=>sprintf(__('「%s」の検索結果', 'shikipress'), get_search_query(false)), 'url'=>shiki_seo_canonical()]; }
-    elseif (is_404()) { $items[] = ['name'=>__('ページが見つかりません', 'shikipress'), 'url'=>'']; }
+    } elseif (is_404()) { $items[] = ['name'=>__('ページが見つかりません', 'shikipress'), 'url'=>'']; }
     else { $items[] = ['name'=>is_home() ? __('記事一覧', 'shikipress') : wp_strip_all_tags(get_the_archive_title()), 'url'=>shiki_seo_canonical()]; }
     $page = max(1, (int) get_query_var('paged'), (int) get_query_var('page'));
     if ($page > 1) { $items[count($items)-1]['name'] .= ' — ' . sprintf(__('%dページ目', 'shikipress'), $page); }
@@ -249,7 +290,7 @@ function shiki_breadcrumbs() {
 function shiki_seo_graph($url, $title, $description, $image) {
     if (!$url || is_search() || is_404() || is_preview() || (is_singular() && !shiki_seo_is_public_post(get_queried_object_id()))) { return []; }
     $home = home_url('/');
-    $graph = [['@type'=>'WebSite','@id'=>$home . '#website','url'=>$home,'name'=>get_bloginfo('name'),'inLanguage'=>get_bloginfo('language')]];
+    $graph = [['@type'=>'WebSite','@id'=>$home . '#website','url'=>$home,'name'=>shiki_seo_text(get_bloginfo('name'), 250),'inLanguage'=>get_bloginfo('language')]];
     $page = ['@type'=>(is_archive() || is_home()) ? 'CollectionPage' : 'WebPage','@id'=>$url . '#webpage','url'=>$url,'name'=>$title,'isPartOf'=>['@id'=>$home . '#website'],'inLanguage'=>get_bloginfo('language')];
     if ($description) { $page['description'] = $description; }
     $items = shiki_breadcrumb_items();
@@ -265,7 +306,7 @@ function shiki_seo_graph($url, $title, $description, $image) {
         $article = ['@type'=>'BlogPosting','@id'=>$url . '#article','mainEntityOfPage'=>['@id'=>$url . '#webpage'],'headline'=>shiki_seo_text(get_the_title($post), 250),'datePublished'=>get_the_date(DATE_W3C, $post),'dateModified'=>get_the_modified_date(DATE_W3C, $post),'inLanguage'=>get_bloginfo('language')];
         $thumbnail = get_the_post_thumbnail_url($post, 'full');
         if ($thumbnail) { $article['image'] = [$thumbnail]; }
-        if (apply_filters('shiki_seo_show_author', false, $post)) { $name = get_the_author_meta('display_name', $post->post_author); if ($name) { $article['author'] = ['@type'=>'Person','name'=>$name]; } }
+        if (apply_filters('shiki_seo_show_author', false, $post)) { $name = shiki_seo_text(get_the_author_meta('display_name', $post->post_author), 250); if ($name) { $article['author'] = ['@type'=>'Person','name'=>$name]; } }
         $graph[] = $article;
     }
     return $graph;
@@ -295,10 +336,13 @@ add_filter('wp_sitemaps_users_query_args', function ($args) {
 });
 function shiki_seo_public_author_ids() {
     global $wpdb;
+    static $memo = [];
     $ids = shiki_seo_indexable_post_ids();
     if (!$ids) { return []; }
+    $signature = md5(implode(',', $ids));
+    if (isset($memo[$signature])) { return $memo[$signature]; }
     $placeholders = implode(',', array_fill(0, count($ids), '%d'));
-    return array_map('intval', $wpdb->get_col($wpdb->prepare("SELECT DISTINCT post_author FROM {$wpdb->posts} WHERE ID IN ($placeholders)", ...$ids)));
+    return $memo[$signature] = array_map('intval', $wpdb->get_col($wpdb->prepare("SELECT DISTINCT post_author FROM {$wpdb->posts} WHERE ID IN ($placeholders)", ...$ids)));
 }
 /** One indexed, request-cached query supports both maps, never protected titles. */
 function shiki_seo_indexable_post_ids() {
@@ -311,16 +355,39 @@ function shiki_seo_indexable_post_ids() {
     return $cache[$signature];
 }
 function shiki_seo_public_term_ids($taxonomy) {
+    // Sitemaps are requested by crawlers repeatedly; keep the result for the current cache generation.
+    $signature = (string) get_option('shikipress_cache_epoch', 1) . ':' . md5(wp_json_encode(shiki_option('category_exclude', [])));
+    // Language plugins change what the post query returns; each language keeps its own list.
+    $key = 'shiki_seo_terms_' . md5((string) $taxonomy . ':' . get_locale());
+    $cached = get_transient($key);
+    if (is_array($cached) && ($cached['signature'] ?? '') === $signature && is_array($cached['ids'] ?? null)) { return $cached['ids']; }
     $ids = shiki_seo_indexable_post_ids();
-    if (!$ids) { return []; }
-    $terms = wp_get_object_terms($ids, $taxonomy, ['fields'=>'ids']);
+    $terms = $ids ? wp_get_object_terms($ids, $taxonomy, ['fields'=>'ids']) : [];
     if (is_wp_error($terms)) { return []; }
+    $terms = array_values(array_unique(array_map('absint', $terms)));
+    if ($terms) { update_termmeta_cache($terms); }
     $hidden = 'category' === $taxonomy ? array_map('absint', (array) shiki_option('category_exclude', [])) : [];
-    return array_values(array_filter(array_map('absint', $terms), function ($id) use ($hidden) { return !in_array($id, $hidden, true) && '1' !== (string) get_term_meta($id, '_shiki_noindex', true); }));
+    $public = array_values(array_filter($terms, function ($id) use ($hidden) { return !in_array($id, $hidden, true) && '1' !== (string) get_term_meta($id, '_shiki_noindex', true); }));
+    set_transient($key, ['signature' => $signature, 'ids' => $public], 12 * HOUR_IN_SECONDS);
+    return $public;
 }
 // "include => [0]" lists every term before WordPress 6.9; shiki_no_term_ids() matches none on all versions.
 add_filter('wp_sitemaps_taxonomies_query_args', function ($args, $taxonomy) { if (in_array($taxonomy, ['category', 'post_tag'], true)) { $args['include'] = shiki_seo_public_term_ids($taxonomy) ?: shiki_no_term_ids(); } return $args; }, 20, 2);
 
+/** The reader-sitemap slice shown for a post type: the requested one, kept within the slices that exist. */
+function shiki_html_sitemap_page($type) {
+    static $pages = [];
+    $key = 'post' === $type ? 'shiki_map_posts' : 'shiki_map_pages';
+    $requested = isset($_GET[$key]) && is_scalar($_GET[$key]) ? max(1, min(100000, absint($_GET[$key]))) : 1;
+    if ($requested < 2) { return 1; }
+    $per_page = max(10, min(100, absint(shiki_option('seo_sitemap_per_page', 50))));
+    $signature = $type . ':' . $per_page . ':' . get_option('shikipress_cache_epoch', 1);
+    if (!isset($pages[$signature])) {
+        $count = new WP_Query(shiki_seo_map_args(['post_type'=>$type,'posts_per_page'=>1,'fields'=>'ids','ignore_sticky_posts'=>true], $type));
+        $pages[$signature] = max(1, (int) ceil((int) $count->found_posts / $per_page));
+    }
+    return min($requested, $pages[$signature]);
+}
 function shiki_html_sitemap($attributes = []) {
     $per_page = max(10, min(100, absint(shiki_option('seo_sitemap_per_page', 50))));
     $html = '<div class="shiki-html-sitemap">';
@@ -336,7 +403,7 @@ function shiki_html_sitemap($attributes = []) {
     if ($season_links) { $html .= '<section aria-label="' . esc_attr__('四季カテゴリー', 'shikipress') . '"><h2>' . esc_html__('四季カテゴリー', 'shikipress') . '</h2><ul>' . $season_links . '</ul></section>'; }
     foreach (['post'=>['shiki_map_posts',__('記事', 'shikipress')], 'page'=>['shiki_map_pages',__('固定ページ', 'shikipress')]] as $type=>$definition) {
         [$key, $label] = $definition;
-        $requested = isset($_GET[$key]) ? max(1, min(100000, absint($_GET[$key]))) : 1;
+        $requested = shiki_html_sitemap_page($type);
         $args = shiki_seo_map_args(['post_type'=>$type,'posts_per_page'=>$per_page,'paged'=>$requested,'orderby'=>$type === 'page' ? ['menu_order'=>'ASC','ID'=>'ASC'] : ['date'=>'DESC','ID'=>'DESC'],'ignore_sticky_posts'=>true], $type);
         $query = new WP_Query($args);
         if (!$query->posts && 0 === (int) $query->found_posts) { continue; }
@@ -346,7 +413,8 @@ function shiki_html_sitemap($attributes = []) {
         if ($query->max_num_pages > 1) {
             $base = get_permalink(get_queried_object_id()) ?: home_url('/');
             $other = 'post' === $type ? 'shiki_map_pages' : 'shiki_map_posts';
-            if (isset($_GET[$other]) && absint($_GET[$other]) > 1) { $base = add_query_arg($other, absint($_GET[$other]), $base); }
+            $other_page = shiki_html_sitemap_page('post' === $type ? 'page' : 'post');
+            if ($other_page > 1) { $base = add_query_arg($other, $other_page, $base); }
             $base = add_query_arg($key, '%#%', $base);
             $links = paginate_links(['base'=>str_replace('%25%23%25','%#%', esc_url_raw($base)), 'format'=>'','current'=>$requested,'total'=>$query->max_num_pages,'type'=>'list','prev_text'=>__('前へ', 'shikipress'),'next_text'=>__('次へ', 'shikipress')]);
             $html .= '<nav aria-label="' . esc_attr($label . __('のページ', 'shikipress')) . '">' . $links . '</nav>';

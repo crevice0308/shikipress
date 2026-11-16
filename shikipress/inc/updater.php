@@ -23,7 +23,8 @@ final class ShikiPress_Updater {
         }
         // Network-wide update transients can be consumed on a site where this
         // theme's verifier is not loaded. A theme-only updater cannot secure it.
-        if ( is_multisite() || 'shikipress' !== get_template() ) {
+        if ( is_multisite() || 'shikipress' !== get_template() ||
+            ( isset( $GLOBALS['wp_customize'] ) && $GLOBALS['wp_customize'] instanceof WP_Customize_Manager && ! $GLOBALS['wp_customize']->is_theme_active() ) ) {
             return false;
         }
         $release = self::release();
@@ -436,7 +437,7 @@ final class ShikiPress_Updater {
         $e = unpack( 'vdisk/vstart/vdisk_count/vcount/Vsize/Voffset/vcomment', substr( $zip, $end + 4, 18 ) );
         if ( 0 !== $e['disk'] || 0 !== $e['start'] || $e['disk_count'] !== $e['count'] ||
             $e['count'] < 1 || $e['count'] > 1500 || $e['offset'] + $e['size'] !== $end ||
-            $end + 22 + $e['comment'] !== strlen( $zip ) ) {
+            0 !== $e['comment'] || $end + 22 !== strlen( $zip ) ) {
             return self::error( 'archive' );
         }
         $position = $e['offset'];

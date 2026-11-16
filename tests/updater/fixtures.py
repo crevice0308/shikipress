@@ -57,6 +57,9 @@ create('corrupt-crc'); b=bytearray((out/'corrupt-crc.zip').read_bytes()); pos=b.
 create('duplicate')
 with zipfile.ZipFile(out/'duplicate.zip','a') as z: z.writestr('shikipress/style.css',style)
 (out/'not-zip.zip').write_bytes(b'bad archive')
+# PclZip takes the first end-of-central-directory record of a commented archive; a comment could carry a second directory.
+create('eocd-comment')
+with zipfile.ZipFile(out/'eocd-comment.zip','a') as z: z.comment = b'x'
 def change_flags(name, flags, method=zipfile.ZIP_DEFLATED):
     create(name, method=method)
     b=bytearray((out/(name+'.zip')).read_bytes()); pos=0

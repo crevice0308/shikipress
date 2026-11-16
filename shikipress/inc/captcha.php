@@ -110,7 +110,9 @@ function shiki_captcha_simple_cf7_reset($result) {
 add_filter('wpcf7_validate', 'shiki_captcha_simple_cf7_reset', 1, 1);
 
 /** Observe the plugin's normal verification event, without changing its result. */
-function shiki_captcha_simple_cf7_observe($response, $results, $form_action) {
+// Defaults: the hook also runs for logins, comments and registrations, and a caller passing fewer
+// arguments must never turn every authentication into a fatal ArgumentCountError.
+function shiki_captcha_simple_cf7_observe($response = null, $results = null, $form_action = '') {
     if ($form_action !== 'contact-form-7' || !shiki_captcha_simple_cf7_active()) { return; }
     $properties = is_object($response) ? get_object_vars($response) : array();
     $malformed = !array_key_exists('success', $properties) || !is_bool($properties['success']) || !is_array($results) || !array_key_exists('success', $results) || !is_bool($results['success']);

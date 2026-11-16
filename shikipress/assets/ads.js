@@ -129,6 +129,8 @@
   const mountSlot = async function (node, payload) {
     if (node.dataset.started === 'true') return;
     if (!deviceAllowed(payload)) { setState(node, 'device-excluded'); return; }
+    // A slot hidden for the other kind of device has no width; show it again before measuring.
+    if (node.dataset.state === 'device-excluded') delete node.dataset.state;
     // Check a declared fixed creative width before any provider code or request.
     // Never clip, resize, move, or remove a provider iframe after it has started.
     const minWidth = Math.max(0, Number(payload.minWidth) || 0);

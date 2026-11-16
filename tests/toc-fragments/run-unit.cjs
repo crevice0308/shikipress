@@ -24,7 +24,7 @@ for (const [id, hash] of cases) {
     getElementById(key) { return key === id ? target : null; },
     addEventListener() {},
   };
-  const window = {matchMedia() { return {matches: false, addEventListener() {}}; }};
+  const window = {matchMedia() { return {matches: false, addEventListener() {}}; }, addEventListener() {}, location: {hash: '', pathname: '/', search: ''}};
   vm.runInNewContext(source, {document, window});
   assert.equal(typeof click, 'function');
   assert.doesNotThrow(() => click());
