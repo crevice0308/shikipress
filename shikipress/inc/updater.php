@@ -31,8 +31,10 @@ final class ShikiPress_Updater {
         }
         $release = self::release();
         // A temporary GitHub failure keeps the last verified offer visible; installation always refetches.
+        $display_only = false;
         if ( is_wp_error( $release ) ) {
             $release = self::last_verified();
+            $display_only = true;
         }
         $current = $theme_data['Version'] ?? '';
         if ( is_wp_error( $release ) || ! self::version( $current ) ) {
@@ -48,7 +50,7 @@ final class ShikiPress_Updater {
             'theme'        => 'shikipress',
             'version'      => $release['version'],
             'url'          => $release['url'],
-            'package'      => $release['package'],
+            'package'      => $display_only ? '' : $release['package'],
             'requires'     => $release['requires'],
             'requires_php' => $release['requires_php'],
             'tested'       => $release['tested'],

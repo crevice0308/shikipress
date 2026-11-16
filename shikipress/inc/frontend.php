@@ -133,9 +133,34 @@ function shiki_card($item, $heading_level = 3, $columns = 3) {
 function shiki_excerpt_source($content) {
     if (!is_string($content) || '' === $content) { return ''; }
     $content = strip_shortcodes($content);
-    if (function_exists('excerpt_remove_blocks')) { $content = excerpt_remove_blocks($content); }
-    if (function_exists('excerpt_remove_footnotes')) { $content = excerpt_remove_footnotes($content); }
-    return $content;
+    $source = function_exists('excerpt_remove_blocks') ? excerpt_remove_blocks($content) : $content;
+    if (function_exists('excerpt_remove_footnotes')) { $source = excerpt_remove_footnotes($source); }
+    // Core keeps text blocks only. Text kept entirely in other containers (details, plugin layout blocks) would
+    // leave nothing; then the raw markup is used as before 1.1.9, still without hidden blocks.
+    if ('' === trim(wp_strip_all_tags($source)) && has_blocks($content)) { $source = shiki_remove_hidden_blocks($content); }
+    return $source;
+}
+/** Serialized blocks without those hidden on the front end (metadata.blockVisibility false, WordPress 6.9 and later). */
+function shiki_remove_hidden_blocks($content) {
+    $keep = static function (array $blocks) use (&$keep): array {
+        $out = [];
+        foreach ($blocks as $block) {
+            if (false === ($block['attrs']['metadata']['blockVisibility'] ?? null)) { continue; }
+            if (!empty($block['innerBlocks'])) {
+                // innerContent holds null where each inner block goes; drop the places of removed ones.
+                $inner = []; $content = []; $position = 0;
+                foreach ($block['innerContent'] as $chunk) {
+                    if (null !== $chunk) { $content[] = $chunk; continue; }
+                    $child = $block['innerBlocks'][$position++] ?? null;
+                    if ($child && false !== ($child['attrs']['metadata']['blockVisibility'] ?? null)) { $inner[] = $child; $content[] = null; }
+                }
+                $block['innerBlocks'] = $keep($inner); $block['innerContent'] = $content;
+            }
+            $out[] = $block;
+        }
+        return $out;
+    };
+    return serialize_blocks($keep(parse_blocks($content)));
 }
 
 function shiki_render_cards($posts) {
@@ -208,6 +233,8 @@ function shiki_toc($content) {
         if ($active === null) { return; }
         $collapsed = preg_replace('/\s+/u', ' ', $active['text']);
         $active['text'] = trim(is_string($collapsed) ? $collapsed : (string) wp_check_invalid_utf8($active['text']));
+        // An unclosed heading must not turn the rest of the article into one entry.
+        if (mb_strlen($active['text']) > 120) { $active['text'] = rtrim(mb_substr($active['text'], 0, 119)) . '…'; }
         if ($active['text'] !== '') { $headings[] = $active; }
         $active = null;
     };
@@ -222,6 +249,7 @@ function shiki_toc($content) {
             continue;
         }
         if ($inert_depth > 0) { continue; }
+        if ($active !== null && $type === '#tag' && $processor->is_tag_closer() && in_array($tag, ['DIV', 'SECTION', 'ARTICLE', 'ASIDE', 'HEADER', 'FOOTER', 'NAV', 'MAIN', 'LI', 'UL', 'OL', 'DL', 'DD', 'DT', 'TD', 'TH', 'TR', 'TABLE', 'BLOCKQUOTE', 'FIGURE', 'FIGCAPTION', 'DETAILS', 'SUMMARY', 'FORM', 'FIELDSET'], true)) { $finish(); continue; }
         if ($type === '#tag' && in_array($tag, ['H1', 'H2', 'H3', 'H4', 'H5', 'H6'], true)) {
             $finish();
             if ($processor->is_tag_closer() || !in_array($tag, ['H2', 'H3'], true)) { continue; }

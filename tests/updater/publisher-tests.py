@@ -302,19 +302,25 @@ class PublisherTests(unittest.TestCase):
                     gate.assert_not_called()
 
     def test_local_package_script_matches_publisher_bytes(self):
-        # scripts/package.py sorted Path objects, so names such as inc/ and inc-legacy.php could be
-        # ordered differently from the publisher's plain strings and give another SHA-256.
-        theme = ROOT / 'shikipress'
-        files = {'shikipress/' + item.relative_to(theme).as_posix(): item.read_bytes()
-                 for item in theme.rglob('*') if item.is_file()}
-        spec = PUBLISHER['current_spec'](files)
+        # scripts/package.py sorted Path objects, so names such as inc/ and inc-legacy.php were
+        # ordered differently from the publisher's plain strings and gave another SHA-256.
+        import shutil
         with tempfile.TemporaryDirectory() as directory:
-            subprocess.run(['python3', str(ROOT / 'scripts/package.py'), directory], check=True, capture_output=True)
-            built = (Path(directory) / f'shikipress-{spec["version"]}.zip').read_bytes()
+            tree = Path(directory) / 'tree'
+            shutil.copytree(ROOT / 'shikipress', tree / 'shikipress')
+            (tree / 'scripts').mkdir()
+            shutil.copy(ROOT / 'scripts/package.py', tree / 'scripts/package.py')
+            (tree / 'shikipress/inc-legacy.php').write_bytes(b'<?php // ordering fixture\n')
+            (tree / 'shikipress/assets.css').write_bytes(b'/* ordering fixture */\n')
+            theme = tree / 'shikipress'
+            files = {'shikipress/' + item.relative_to(theme).as_posix(): item.read_bytes()
+                     for item in theme.rglob('*') if item.is_file()}
+            spec = PUBLISHER['current_spec'](files)
+            out = Path(directory) / 'out'
+            subprocess.run(['python3', str(tree / 'scripts/package.py'), str(out)], check=True, capture_output=True)
+            built = (out / f'shikipress-{spec["version"]}.zip').read_bytes()
             self.assertEqual(hashlib.sha256(built).hexdigest(), spec['sha256'])
-            self.assertTrue((Path(directory) / 'SHA256SUMS.txt').read_bytes().endswith(b'.zip\n'))
-        names = ['shikipress/inc/a.php', 'shikipress/inc-legacy.php', 'shikipress/assets.css', 'shikipress/assets/a.js']
-        self.assertEqual(sorted(names), sorted(names, key=lambda name: Path(name).as_posix()))
+            self.assertTrue((out / 'SHA256SUMS.txt').read_bytes().endswith(b'.zip\n'))
 
     def run_draft_publication(self, corrupted=None, initial_names=()):
         initial = {name: self.assets[name] for name in initial_names}

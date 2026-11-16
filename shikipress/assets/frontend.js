@@ -13,6 +13,8 @@
     const status = own('[id="shiki-status"]')[0] || null;
     let active = null;
     let returnTo = null;
+    let fromHash = false;
+    let fragmentLink = null;
     const inertStates = new Map();
     // A shared or bookmarked #nav-search, or a menu link written as a plain fragment, opens its panel too.
     const panelFromHash = () => {
@@ -37,6 +39,7 @@
         inertStates.forEach((value, el) => { el.inert = value; });
         inertStates.clear();
         active = null;
+        fromHash = false;
         // A panel opened from its fragment drops it, so the same link opens the panel again.
         if (panelFromHash() === previous) {
             try { const url = new URL(window.location.href); url.hash = ''; history.replaceState(history.state, '', url.href); } catch (_) { /* The fragment simply stays. */ }
@@ -44,17 +47,20 @@
         announce(`${previous.querySelector('h2')?.textContent || 'パネル'}を閉じました`);
         if (restore) {
             // The opening tab may be hidden after a rotation or resize; fall back to a visible trigger or the main content.
-            const visible = (el) => Boolean(el?.isConnected && el.getClientRects().length);
+            const visible = (el) => Boolean(el?.isConnected && el !== document.body && el !== document.documentElement && el.getClientRects().length);
             const target = visible(returnTo) ? returnTo : (triggers.find((el) => el.dataset.panel === previous.id && visible(el)) || document.getElementById('main-content'));
             target?.focus({ preventScroll: true });
         }
         if (window.visualViewport) document.documentElement.style.removeProperty('--keyboard-offset');
     };
-    const openPanel = (panel, trigger) => {
+    const openPanel = (panel, trigger, hash = false) => {
         if (!panel) return;
         if (active === panel) { closePanel(); return; }
         if (active) closePanel(false);
-        returnTo = trigger || document.activeElement;
+        fromHash = hash;
+        // The page itself is no place to return to; closePanel() then uses a visible trigger or the main content.
+        const opener = trigger || document.activeElement;
+        returnTo = opener && opener !== document.body && opener !== document.documentElement ? opener : null;
         active = panel;
         panel.hidden = false;
         panel.classList.add('is-open');
@@ -91,7 +97,18 @@
         if (link.target && link.target !== '_self') return;
         closePanel(false);
     }));
-    const openFromHash = () => { const panel = panelFromHash(); if (panel && active !== panel) openPanel(panel, null); };
+    // A plain fragment link (for example a menu item #nav-pages) is remembered as the place to return to.
+    document.addEventListener('click', (event) => {
+        const link = event.target instanceof Element ? event.target.closest('a[href^="#"]') : null;
+        fragmentLink = link && !link.dataset.panel ? link : null;
+    }, true);
+    const openFromHash = () => {
+        const panel = panelFromHash();
+        if (panel && active !== panel) { openPanel(panel, fragmentLink?.isConnected ? fragmentLink : null, true); }
+        // Going back past the fragment (or removing it) closes the panel it opened.
+        else if (!panel && active && fromHash) closePanel();
+        fragmentLink = null;
+    };
     window.addEventListener('hashchange', openFromHash);
     openFromHash();
     // Keep the search form in the visual viewport when mobile keyboards resize it.

@@ -16,8 +16,8 @@
 .entry-content .wpcf7 form .wpcf7-response-output{max-width:100%;margin:1.25em 0;padding:14px 18px;color:var(--ink);overflow-wrap:anywhere}
 .entry-content .wpcf7 form.invalid .wpcf7-response-output,.entry-content .wpcf7 form.failed .wpcf7-response-output,.entry-content .wpcf7 form.unaccepted .wpcf7-response-output{border-color:var(--shiki-form-error)}
 .entry-content .wpcf7 form.sent .wpcf7-response-output{border-color:var(--accent)}
-@media(prefers-color-scheme:dark){:root:not([data-theme=light]) .entry-content .wpcf7{--shiki-form-error:#ffb4ab}}
-:root[data-theme=dark] .entry-content .wpcf7{--shiki-form-error:#ffb4ab}
+@media screen and (prefers-color-scheme:dark){:root:not([data-theme=light]) .entry-content .wpcf7{--shiki-form-error:#ffb4ab}}
+@media screen{:root[data-theme=dark] .entry-content .wpcf7{--shiki-form-error:#ffb4ab}}
 .entry-content .tablepress{--text-color:var(--ink);--head-text-color:var(--ink);--head-bg-color:var(--accent-soft);--head-active-bg-color:var(--accent-soft);--odd-text-color:var(--ink);--odd-bg-color:var(--surface);--even-text-color:var(--ink);--even-bg-color:var(--paper);--hover-text-color:var(--ink);--hover-bg-color:var(--accent-soft);--border-color:var(--line)}
 .entry-content .dt-container{min-width:0;max-width:100%;color:var(--ink)}
 /* DataTables owns scrolling and synchronizes its separate header/body tables. */

@@ -14,7 +14,7 @@ $assert = static function ( $condition, $label ) use ( &$checks ) {
 $old_settings = get_option( 'shikipress_settings', array() );
 $old_user = get_current_user_id();
 $old_options = array();
-foreach ( array( 'show_on_front', 'page_on_front', 'page_for_posts', 'blogname' ) as $option ) { $old_options[ $option ] = get_option( $option ); }
+foreach ( array( 'show_on_front', 'page_on_front', 'page_for_posts', 'blogname', 'blog_public' ) as $option ) { $old_options[ $option ] = get_option( $option ); }
 $old_query = array( $GLOBALS['wp_query'], $GLOBALS['wp_the_query'] );
 $old_post = $GLOBALS['post'] ?? null;
 $old_globals = array( $_GET, $_POST, $_REQUEST, $GLOBALS['pagenow'] ?? null );
@@ -288,13 +288,14 @@ try {
 	wp_set_current_user( $admin );
 	require_once ABSPATH . 'wp-admin/includes/user.php';
 	wp_delete_user( $contributor );
-	$usage = get_option( 'shikipress_deepl_usage', null );
+	$usage_key = 'shikipress_deepl_usage_' . gmdate( 'Ymd' );
+	$usage = get_option( $usage_key, null );
 	$one = static fn() => 1;
 	add_filter( 'shiki_deepl_daily_limit', $one );
-	delete_option( 'shikipress_deepl_usage' );
+	delete_option( $usage_key );
 	$first = shiki_deepl_reserve_request(); $second = shiki_deepl_reserve_request();
 	remove_filter( 'shiki_deepl_daily_limit', $one );
-	if ( null === $usage ) { delete_option( 'shikipress_deepl_usage' ); } else { update_option( 'shikipress_deepl_usage', $usage, false ); }
+	if ( null === $usage ) { delete_option( $usage_key ); } else { update_option( $usage_key, $usage, false ); }
 	$assert( ! $contributor_allowed && shiki_deepl_allowed( get_post( $own ) ) && $first && ! $second, 'Only users who may publish send titles to DeepL, within a daily limit' );
 
 	// 14. Bounded work per request.
@@ -321,6 +322,67 @@ try {
 	$state = shiki_links_scan_batch();
 	$assert( $state['complete'] && PHP_INT_MAX - 1 === $state['last_id'], 'A link check resumes after its last checked post' );
 	delete_option( 'shikipress_link_state' );
+
+	// 16. Found by the review of this release.
+	$purged = 0; $count_purge = static function () use ( &$purged ) { ++$purged; };
+	$trash_draft = $make( array( 'post_status' => 'draft', 'post_title' => 'TEST 119 draft to trash' ) );
+	add_action( 'shiki_cache_invalidated', $count_purge );
+	wp_trash_post( $trash_draft ); wp_untrash_post( $trash_draft );
+	remove_action( 'shiki_cache_invalidated', $count_purge );
+	$assert( 0 === $purged, 'Moving a draft to the trash and back invalidates nothing' );
+	$events = shiki_validate_settings( array( 'season_events' => array( array( 'id' => 'test-119-a', 'label' => 'TEST 119 A', 'start' => '12-5', 'end' => '１２-２５' ), array( 'id' => 'test-119-b', 'label' => 'TEST 119 B', 'start' => '1/2', 'end' => '01.15' ) ) ), 'automation' )['season_events'];
+	$assert( 2 === count( $events ) && '12-05' === $events[0]['start'] && '12-25' === $events[0]['end'] && '01-02' === $events[1]['start'] && '01-15' === $events[1]['end'], 'Event dates typed as 12-5, １２-２５, 1/2 or 01.15 are understood' );
+	update_option( 'shikipress_settings', array_merge( $base, array( 'season_events' => $events ) ), false );
+	$kept_events = shiki_validate_settings( array( 'season_events' => array( array( 'id' => 'test-119-a', 'label' => 'TEST 119 A', 'start' => 'invalid', 'end' => '12-25' ) ) ), 'automation' )['season_events'];
+	$assert( 1 === count( $kept_events ) && '12-05' === $kept_events[0]['start'], 'An event date that cannot be read keeps the saved event' );
+	update_option( 'shikipress_settings', $base, false );
+	$zones = array( shiki_validate_settings( array( 'timezone' => 'europe/london' ), 'design' )['timezone'], shiki_validate_settings( array( 'timezone' => 'No/Such_Zone' ), 'design', array_merge( $base, array( 'timezone' => 'Europe/Paris' ) ) )['timezone'] );
+	$assert( array( 'Europe/London', 'Europe/Paris' ) === $zones, 'Time zones are matched without case and an unknown one keeps the saved zone' );
+	$title_post = $make( array( 'post_status' => 'draft', 'post_title' => '今年中に済ませたい冬の大掃除' ) );
+	$assert( empty( shiki_classify_post( get_post( $title_post ) )['all_year'] ?? false ) && ! str_contains( shiki_classify_post( get_post( $title_post ) )['notice'], '通年' ), '"今年中" does not mark an article as all-year' );
+	$parent = wp_insert_term( 'TEST 119 winter parent ' . wp_generate_password( 6, false ), 'category' );
+	$terms[] = (int) $parent['term_id'];
+	$child = wp_insert_term( 'TEST 119 winter child ' . wp_generate_password( 6, false ), 'category', array( 'parent' => (int) $parent['term_id'] ) );
+	$terms[] = (int) $child['term_id'];
+	$child_post = $make( array( 'post_title' => 'TEST 119 child season post', 'post_category' => array( (int) $child['term_id'] ) ) );
+	update_option( 'shikipress_settings', array_merge( $base, array( 'season_mode' => 'fixed', 'season_fixed' => 'winter', 'season_terms' => array( 'winter' => (int) $parent['term_id'] ), 'featured_mode' => 'auto' ) ), false );
+	$featured = wp_list_pluck( shiki_select_posts( 'featured', array(), 12 ), 'ID' );
+	$assert( in_array( $child_post, $featured, true ), 'A season mapped to a parent category features posts of its child categories' );
+	// A new post published without a draft save still gets its one-time automatic season.
+	update_option( 'shikipress_settings', array_merge( $base, array( 'classification_mode' => 'auto', 'season_terms' => array( 'winter' => (int) $parent['term_id'] ) ) ), false );
+	$direct = $make( array( 'post_status' => 'auto-draft', 'post_title' => 'Auto Draft' ) );
+	wp_update_post( array( 'ID' => $direct, 'post_status' => 'publish', 'post_title' => '冬の結露を防ぐ窓の暖かい暮らし', 'post_content' => '冬の寒い朝、雪と結露の対策。' ) );
+	$assert( in_array( (int) $parent['term_id'], wp_get_post_categories( $direct ), true ), 'A new post published without a draft save gets its automatic season' );
+	update_option( 'shikipress_settings', $base, false );
+	shiki_schedule_automation();
+	$assert( false === wp_get_schedule( 'shiki_season_tick' ) && false !== wp_next_scheduled( 'shiki_season_tick' ) && false === wp_get_schedule( 'shiki_daily_maintenance' ), 'Periodic steps are single events renewed by the active theme' );
+	$dns = static fn() => array( '93.184.215.14' );
+	add_filter( 'shiki_link_dns_records', $dns );
+	$normalized = shiki_link_safe_target( 'HTTP://Example.COM/path?x=1' );
+	remove_filter( 'shiki_link_dns_records', $dns );
+	$assert( is_array( $normalized ) && 'http://example.com/path?x=1' === $normalized['url'], 'A link is checked in the form WordPress sends it, so the DNS pin always applies' );
+	$saved_one = array_merge( shiki_ads_blank_slot( 'slot-1' ), array( 'name' => 'TEST 119 one', 'service' => 'generic', 'state' => 'test', 'vendors' => array() ) );
+	update_option( 'shikipress_settings', array_merge( $base, array( 'ads_slots' => array( $saved_one ) ) ), false );
+	$template = array_merge( shiki_ads_blank_slot( 'slot-2' ), array( 'template' => '1', 'offered_id' => 'slot-2' ) );
+	$renamed_rows = shiki_validate_settings( array( 'ads_slots' => array( array_merge( $saved_one, array( 'id' => 'slot-2', 'original_id' => 'slot-1' ) ), $template ) ), 'ads' )['ads_slots'];
+	$assert( 1 === count( $renamed_rows ) && 'slot-2' === $renamed_rows[0]['id'], 'An untouched extra row stays unsaved when another slot takes its offered ID' );
+	$japanese = shiki_validate_settings( array( 'ads_slots' => array( $saved_one, array_merge( $template, array( 'id' => '記事下', 'name' => 'TEST 119 new' ) ) ) ), 'ads' )['ads_slots'];
+	$assert( 2 === count( $japanese ) && 'slot-2' === $japanese[1]['id'], 'An extra row with an unusable ID takes the offered ID' );
+	update_option( 'shikipress_settings', $base, false );
+	$details = $make( array( 'post_title' => 'TEST 119 details', 'post_content' => '<!-- wp:details --><details class="wp-block-details"><summary>Q</summary><!-- wp:paragraph --><p>TEST119DETAILSTEXT</p><!-- /wp:paragraph --></details><!-- /wp:details -->' ) );
+	ob_start(); shiki_card( $details ); $details_card = (string) ob_get_clean();
+	$assert( str_contains( $details_card, 'TEST119DETAILSTEXT' ), 'Text kept inside a details block still makes the card excerpt' );
+	$unclosed = shiki_toc( '<div><h2>B</div><p>TEST119PARAGRAPH</p><h2>C' . str_repeat( 'x', 300 ) );
+	$assert( ! str_contains( $unclosed, 'TEST119PARAGRAPH</a>' ) && str_contains( $unclosed, '>B</a>' ) && str_contains( $unclosed, '…</a>' ), 'TOC headings end with their container and stay short when unclosed' );
+	$locked_blog = $make( array( 'post_type' => 'page', 'post_title' => 'TEST 119 protected blog', 'post_password' => 'test-only' ) );
+	update_option( 'show_on_front', 'page' ); update_option( 'page_on_front', $front ); update_option( 'page_for_posts', $locked_blog );
+	// The disposable CI site discourages search engines (every page is noindex); this check needs a public site.
+	update_option( 'blog_public', '1' );
+	$main_query( array( 'page_id' => $locked_blog ) );
+	$listed = is_home() && ! shiki_seo_noindex();
+	update_option( 'blog_public', $old_options['blog_public'] );
+	$assert( $listed, 'A password on the page assigned to the posts list does not de-index the list' );
+	update_option( 'show_on_front', 'posts' ); update_option( 'page_on_front', 0 ); update_option( 'page_for_posts', 0 );
 
 	$assert( array() === $errors, 'No PHP warning from the theme in these regressions' . ( $errors ? ' (' . implode( ' | ', array_slice( array_unique( $errors ), 0, 5 ) ) . ')' : '' ) );
 } catch ( Throwable $error ) {

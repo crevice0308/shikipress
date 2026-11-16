@@ -96,12 +96,22 @@ function shiki_xml_sitemap_url() {
 // It does not purge hosting/CDN caches; those retain their own documented procedure.
 // One save fires several invalidations (terms, metadata, the post itself); the page caches are
 // emptied once, after all of them, at the end of the request.
+function shiki_compat_purge_sites($site = null) {
+    static $sites = array();
+    if (null !== $site) { $sites[(int) $site] = true; return $sites; }
+    $pending = $sites; $sites = array();
+    return $pending;
+}
 function shiki_compat_purge_page_caches() {
     if (class_exists('WPSEO_Sitemaps_Cache') && is_callable(array('WPSEO_Sitemaps_Cache', 'clear'))) { WPSEO_Sitemaps_Cache::clear(); }
-    // On a network, only the current site's pages changed; 0 would empty the cache of every site.
-    if (function_exists('wp_cache_clear_cache')) { wp_cache_clear_cache(is_multisite() ? get_current_blog_id() : 0); }
+    if (!function_exists('wp_cache_clear_cache')) { shiki_compat_purge_sites(); return; }
+    // On a network, only the sites whose content changed (also inside switch_to_blog()); 0 would empty every site.
+    foreach (array_keys(shiki_compat_purge_sites()) as $site) { wp_cache_clear_cache(is_multisite() ? $site : 0); }
 }
 add_action('shiki_cache_invalidated', static function () {
-    if (!did_action('init') || has_action('shutdown', 'shiki_compat_purge_page_caches')) { return; }
-    add_action('shutdown', 'shiki_compat_purge_page_caches', 0);
+    if (!did_action('init')) { return; }
+    shiki_compat_purge_sites(is_multisite() ? get_current_blog_id() : 0);
+    // During shutdown a deferred purge may already have run; purge at once instead.
+    if (doing_action('shutdown')) { shiki_compat_purge_page_caches(); return; }
+    if (false === has_action('shutdown', 'shiki_compat_purge_page_caches')) { add_action('shutdown', 'shiki_compat_purge_page_caches', 0); }
 }, 30);

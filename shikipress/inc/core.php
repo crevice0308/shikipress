@@ -185,7 +185,7 @@ function shiki_public_pages() {
     // Templates, menus and panels ask for this list several times per request. Keep one result per cache
     // generation and settings; any change to a published page or these settings starts a new generation.
     static $memo = array();
-    $signature = (int) get_option( 'shikipress_cache_epoch', 1 ) . ':' . md5( wp_json_encode( array( shiki_option( 'page_exclude', array() ), shiki_option( 'page_priority', array() ) ) ) );
+    $signature = get_current_blog_id() . ':' . get_locale() . ':' . (int) get_option( 'shikipress_cache_epoch', 1 ) . ':' . md5( wp_json_encode( array( shiki_option( 'page_exclude', array() ), shiki_option( 'page_priority', array() ) ) ) );
     if ( isset( $memo[ $signature ] ) ) { return $memo[ $signature ]; }
     if ( count( $memo ) > 20 ) { $memo = array(); }
     $pages = get_posts( array( 'post_type' => 'page', 'post_status' => 'publish', 'has_password' => false, 'posts_per_page' => -1, 'orderby' => array( 'menu_order' => 'ASC', 'title' => 'ASC' ), 'suppress_filters' => false, 'exclude' => array_map( 'absint', (array) shiki_option( 'page_exclude', array() ) ), 'meta_query' => array( shiki_visibility_meta_query() ), 'update_post_meta_cache' => false, 'update_post_term_cache' => false ) );

@@ -85,55 +85,61 @@ add_filter('shiki_sanitize_settings', function ($out, $input, $section) {
     // IDs the submitted rows will keep, so that a row whose ID has to be replaced never takes one of them.
     $wanted = [];
     foreach ($rows as $row) { if (is_array($row) && empty($row['delete']) && is_scalar($row['id'] ?? null)) { $wanted[sanitize_key((string) $row['id'])] = true; } }
+    $build = static function (array $row, string $id, array $old) use ($can_code): array {
+            $service = shiki_ads_choice($row['service'] ?? '', shiki_ads_services(), 'generic');
+            $code = $can_code && is_string($row['code'] ?? null) ? substr($row['code'], 0, 100000) : ($old['code'] ?? '');
+            $parsed = 'adsense' === $service ? shiki_ads_parse_adsense($code) : [];
+            $publisher = shiki_ads_pub($row['publisher'] ?? '') ?: ($parsed['publisher'] ?? '');
+            $ad_slot_input = is_scalar($row['ad_slot'] ?? '') ? (string) ($row['ad_slot'] ?? '') : '';
+            $ad_slot = preg_match('/^[0-9]{1,20}$/D', $ad_slot_input) ? $ad_slot_input : ($parsed['ad_slot'] ?? '');
+            $loaders = [];
+            $loader_input = $row['shared_loaders'] ?? [];
+            foreach (is_array($loader_input) ? $loader_input : preg_split('/\s+/', (string) $loader_input) as $url) {
+                if (!is_string($url)) { continue; }
+                if (str_starts_with($url, 'https://') && filter_var($url, FILTER_VALIDATE_URL)) { $loaders[] = esc_url_raw($url, ['https']); }
+            }
+            return [
+                'id' => $id, 'name' => sanitize_text_field($row['name'] ?? $id),
+                'service' => $service, 'state' => shiki_ads_choice($row['state'] ?? '', array_fill_keys(['off','test','production'], true), 'test'),
+                'position' => shiki_ads_choice($row['position'] ?? '', shiki_ads_positions(), 'manual'),
+                'device' => shiki_ads_choice($row['device'] ?? '', array_fill_keys(['all','mobile','desktop'], true), 'all'),
+                'post_types' => array_values(array_intersect(['post','page'], (array) ($row['post_types'] ?? []))),
+                'exclude_ids' => shiki_ads_ids($row['exclude_ids'] ?? []), 'exclude_categories' => shiki_ads_ids($row['exclude_categories'] ?? []),
+                'interval' => max(1, min(20, absint($row['interval'] ?? 3))), 'limit' => max(1, min(6, absint($row['limit'] ?? 1))),
+                'height' => max(80, min(600, absint($row['height'] ?? 250))),
+                'min_width' => max(0, min(2000, absint($row['min_width'] ?? 0))),
+                'dummy' => shiki_ads_choice($row['dummy'] ?? '', array_fill_keys(['ready','delay','no-fill','failure'], true), 'ready'),
+                'publisher' => $publisher, 'ad_slot' => $ad_slot, 'code' => $code,
+                'trusted' => $can_code ? !empty($row['trusted']) : !empty($old['trusted']),
+                'vendors' => shiki_ads_ids($row['vendors'] ?? ('adsense' === $service ? [755] : [])),
+                'purposes' => shiki_ads_ids($row['purposes'] ?? [1,3,4]), 'shared_loaders' => array_values(array_unique($loaders)),
+            ];
+    };
     foreach ($rows as $index => $row) {
         if (!is_array($row) || !empty($row['delete'])) { continue; }
+        $submitted = array_key_exists('id', $row) ? (is_scalar($row['id']) ? sanitize_key((string) $row['id']) : '') : 'slot-' . ($index + 1);
+        // The screen always offers one extra row. Saved exactly as offered (its ID included), it is not a slot
+        // the administrator created; storing it would add another disabled slot on every save.
+        $offered = !empty($row['template']) && is_string($row['offered_id'] ?? null) ? sanitize_key($row['offered_id']) : '';
+        if (!empty($row['template']) && '' !== $submitted && ('' === $offered || $offered === $submitted) && $build($row, $submitted, []) == shiki_ads_blank_slot($submitted)) { continue; }
         // The ID a saved row was rendered with. Code and the execution approval stay with that slot when an
         // administrator without unfiltered_html renames it; each saved slot can be claimed by one row only.
         $original = is_string($row['original_id'] ?? null) ? sanitize_key($row['original_id']) : '';
         if ('' !== $original && (!isset($previous[$original]) || isset($claimed[$original]))) { $original = ''; }
-        $id = array_key_exists('id', $row) ? (is_scalar($row['id']) ? sanitize_key((string) $row['id']) : '') : 'slot-' . ($index + 1);
+        $id = $submitted;
         if ('' === $id || isset($slots[$id])) {
-            // Never drop a row (and its code) silently: keep its saved ID or take a free one, and say so.
+            // Never drop a row (and its code) silently: keep its saved or offered ID, or take a free one that no
+            // ad block in a post still names, and say so.
             $label = is_scalar($row['name'] ?? null) ? sanitize_text_field((string) $row['name']) : '';
-            if ('' !== $original && !isset($slots[$original])) { $id = $original; }
-            else { $number = count($slots) + 1; while (isset($slots['slot-' . $number]) || isset($wanted['slot-' . $number]) || isset($previous['slot-' . $number])) { $number++; } $id = 'slot-' . $number; }
+            $free = static fn(string $candidate): bool => '' !== $candidate && !isset($slots[$candidate]) && !isset($wanted[$candidate]);
+            if ($free($original)) { $id = $original; }
+            elseif ($free($offered) && !isset($previous[$offered])) { $id = $offered; }
+            else { $number = count($slots) + 1; while (!$free('slot-' . $number) || isset($previous['slot-' . $number]) || shiki_ads_id_referenced('slot-' . $number)) { $number++; } $id = 'slot-' . $number; }
             $notices[] = sprintf('広告枠「%1$s」の枠IDが空・使用できない文字だけ・他の枠と重複していたため、%2$s として保存しました。', '' !== $label ? $label : $id, $id);
         }
         $old = '' !== $original ? $previous[$original] : ((!isset($claimed[$id]) && isset($previous[$id])) ? $previous[$id] : []);
         if ($old) { $claimed[$old['id']] = true; }
-        $service = shiki_ads_choice($row['service'] ?? '', shiki_ads_services(), 'generic');
-        $code = $can_code && is_string($row['code'] ?? null) ? substr($row['code'], 0, 100000) : ($old['code'] ?? '');
-        $parsed = 'adsense' === $service ? shiki_ads_parse_adsense($code) : [];
-        $publisher = shiki_ads_pub($row['publisher'] ?? '') ?: ($parsed['publisher'] ?? '');
-        $ad_slot_input = is_scalar($row['ad_slot'] ?? '') ? (string) ($row['ad_slot'] ?? '') : '';
-        $ad_slot = preg_match('/^[0-9]{1,20}$/D', $ad_slot_input) ? $ad_slot_input : ($parsed['ad_slot'] ?? '');
-        $loaders = [];
-        $loader_input = $row['shared_loaders'] ?? [];
-        foreach (is_array($loader_input) ? $loader_input : preg_split('/\s+/', (string) $loader_input) as $url) {
-            if (!is_string($url)) { continue; }
-            if (str_starts_with($url, 'https://') && filter_var($url, FILTER_VALIDATE_URL)) { $loaders[] = esc_url_raw($url, ['https']); }
-        }
-        $slots[$id] = [
-            'id' => $id, 'name' => sanitize_text_field($row['name'] ?? $id),
-            'service' => $service, 'state' => shiki_ads_choice($row['state'] ?? '', array_fill_keys(['off','test','production'], true), 'test'),
-            'position' => shiki_ads_choice($row['position'] ?? '', shiki_ads_positions(), 'manual'),
-            'device' => shiki_ads_choice($row['device'] ?? '', array_fill_keys(['all','mobile','desktop'], true), 'all'),
-            'post_types' => array_values(array_intersect(['post','page'], (array) ($row['post_types'] ?? []))),
-            'exclude_ids' => shiki_ads_ids($row['exclude_ids'] ?? []), 'exclude_categories' => shiki_ads_ids($row['exclude_categories'] ?? []),
-            'interval' => max(1, min(20, absint($row['interval'] ?? 3))), 'limit' => max(1, min(6, absint($row['limit'] ?? 1))),
-            'height' => max(80, min(600, absint($row['height'] ?? 250))),
-            'min_width' => max(0, min(2000, absint($row['min_width'] ?? 0))),
-            'dummy' => shiki_ads_choice($row['dummy'] ?? '', array_fill_keys(['ready','delay','no-fill','failure'], true), 'ready'),
-            'publisher' => $publisher, 'ad_slot' => $ad_slot, 'code' => $code,
-            'trusted' => $can_code ? !empty($row['trusted']) : !empty($old['trusted']),
-            'vendors' => shiki_ads_ids($row['vendors'] ?? ('adsense' === $service ? [755] : [])),
-            'purposes' => shiki_ads_ids($row['purposes'] ?? [1,3,4]), 'shared_loaders' => array_values(array_unique($loaders)),
-        ];
-        // The screen always offers one extra row. Saved exactly as offered, it is not a slot the
-        // administrator created; storing it would add another disabled slot on every save.
-        // An ID typed into the row is a change too, although the default values follow the ID.
-        $offered = is_string($row['offered_id'] ?? null) ? sanitize_key($row['offered_id']) : $id;
-        if (!$old && !empty($row['template']) && $offered === $id && $slots[$id] == shiki_ads_blank_slot($id)) { unset($slots[$id]); }
+        $slots[$id] = $build($row, $id, $old);
     }
     foreach ($notices as $notice) { add_settings_error('shikipress_settings', 'shiki_ads_slot_id', $notice, 'warning'); }
     $out['ads_slots'] = array_values($slots);
